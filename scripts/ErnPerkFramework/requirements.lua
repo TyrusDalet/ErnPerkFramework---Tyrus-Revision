@@ -18,7 +18,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 -- This file contains some common requirements builders that could be re-used by lots of stuff.
 
-local MOD_NAME = require("scripts.ErnPerkFramework.ns")
+local MOD_NAME = require("scripts.ErnPerkFramework.settings").MOD_NAME
 local core = require("openmw.core")
 local localization = core.l10n(MOD_NAME)
 local pself = require("openmw.self")

@@ -15,12 +15,12 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ]]
-local MOD_NAME = require("scripts.ErnPerkFramework.ns")
+local MOD_NAME = require("scripts.ErnPerkFramework.settings").MOD_NAME
 local perkUtil = require("scripts.ErnPerkFramework.perk")
 local pself = require("openmw.self")
 local reqs = require("scripts.ErnPerkFramework.requirements")
 local types = require("openmw.types")
-local settings = require("scripts.ErnPerkFramework.settings").main
+local settings = require("scripts.ErnPerkFramework.settings")
 
 if require("openmw.core").API_REVISION < 62 then
     error("OpenMW 0.49 or newer is required!")
@@ -75,6 +75,11 @@ end
 ---@field art? string|fun():string                   -- Texture path or function returning it
 ---@field hidden? boolean|fun():boolean              -- Whether perk is hidden
 ---@field cost? number|fun():number                  -- Cost of the perk
+---@field category? table                            -- Optional 3-element table { "TypeName", "GroupName", sortOrder }
+--                                                  -- TypeName:  top-level tab label  (e.g. "Faction")
+--                                                  -- GroupName: collapsible sub-group (e.g. "Mages Guild")
+--                                                  -- sortOrder: integer that sets position within the group
+--                                                  -- Perks without a category appear only in the "All" tab.
 
 --- Registers a new perk into the framework.
 --- Perks must have `id`, `requirements` (table), `onAdd` (function), and `onRemove` (function).
@@ -150,6 +155,38 @@ local function registerPerk(data)
                 tostring(data.id) ..
                 ") perk data has a 'cost' field, which must be a number or a function that returns a number.",
                 2)
+            return false
+        end
+    end
+
+    -- category is optional. When supplied it must be a 3-element array:
+    --   [1] string  - top-level type name  (e.g. "Faction")
+    --   [2] string  - sub-group name       (e.g. "Mages Guild")
+    --   [3] number  - sort order within that group (integer)
+    -- Perks without a category appear only under the synthetic "All" tab.
+    if (data.category ~= nil) then
+        if type(data.category) ~= "table" then
+            error(
+                "registerPerk(" .. tostring(data.id) ..
+                ") perk data has a 'category' field, which must be a table.", 2)
+            return false
+        end
+        if type(data.category[1]) ~= "string" then
+            error(
+                "registerPerk(" .. tostring(data.id) ..
+                ") category[1] must be a string (type name, e.g. \"Faction\").", 2)
+            return false
+        end
+        if type(data.category[2]) ~= "string" then
+            error(
+                "registerPerk(" .. tostring(data.id) ..
+                ") category[2] must be a string (group name, e.g. \"Mages Guild\").", 2)
+            return false
+        end
+        if type(data.category[3]) ~= "number" then
+            error(
+                "registerPerk(" .. tostring(data.id) ..
+                ") category[3] must be a number (sort order within the group).", 2)
             return false
         end
     end

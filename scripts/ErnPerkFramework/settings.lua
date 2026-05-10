@@ -17,7 +17,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ]]
 local interfaces = require("openmw.interfaces")
 local storage = require("openmw.storage")
-local MOD_NAME = require("scripts.ErnPerkFramework.ns")
+local MOD_NAME = "ErnPerkFramework"
 
 local function init()
     interfaces.Settings.registerPage {
@@ -45,13 +45,6 @@ local function init()
                 }
             },
             {
-                key = "showOnRest",
-                name = "showOnRestName",
-                description = "showOnRestDescription",
-                default = (interfaces.NCGDMW ~= nil) or (interfaces.NCG ~= nil),
-                renderer = "checkbox",
-            },
-            {
                 key = "disable",
                 name = "disableName",
                 description = "disableDescription",
@@ -70,15 +63,10 @@ end
 
 local lookupFuncTable = {
     __index = function(table, key)
-        if key == "subscribe" then
-            return function(callback)
-                print("Subscribed to " .. tostring(table.groupKey) .. ".")
-                return table.section.subscribe(table.section, callback)
-            end
-        elseif key == "section" then
-            return table.section
-        elseif key == "groupKey" then
-            return table.groupKey
+        if key == "init" then
+            return init
+        elseif key == "MOD_NAME" then
+            return MOD_NAME
         end
         -- fall through to settings section
         local val = table.section:get(key)
@@ -95,14 +83,4 @@ local container = {
 }
 setmetatable(container, lookupFuncTable)
 
----@alias SettingContainer table
-
----@class Settings
----@field init fun()
----@field main SettingContainer
-
----@type SettingContainer
-return {
-    init = init,
-    main = container,
-}
+return container

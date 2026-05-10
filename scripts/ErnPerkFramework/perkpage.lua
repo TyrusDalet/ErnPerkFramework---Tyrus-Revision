@@ -22,7 +22,7 @@ local types = require("openmw.types")
 local input = require("openmw.input")
 local log = require("scripts.ErnPerkFramework.log")
 local util = require('openmw.util')
-local MOD_NAME = require("scripts.ErnPerkFramework.ns")
+local MOD_NAME = require("scripts.ErnPerkFramework.settings").MOD_NAME
 local settings = require("scripts.ErnPerkFramework.settings")
 local ui = require('openmw.ui')
 local aux_util = require('openmw_aux.util')
@@ -62,6 +62,120 @@ local haveThisPerk = ui.create {
     },
 }
 
+-- Remaining points display, sits just above the action buttons.
+local remainingPointsElement = ui.create {
+    template = interfaces.MWUI.templates.textNormal,
+    type = ui.TYPE.Text,
+    props = {
+        textAlignH = ui.ALIGNMENT.Start,
+        textAlignV = ui.ALIGNMENT.Center,
+        text = "",
+    },
+}
+
+-- ============================================================
+--  CATEGORY / TAB STATE
+--
+--  activeTabType  - the currently selected top-level tab name,
+--                   or the synthetic "All" value (TAB_ALL).
+--  expandedGroups - set of group names currently expanded
+--                   (map of groupName -> true). Multiple groups
+--                   may be open at the same time.
+--  TAB_ALL        - sentinel string for the "show everything"
+--                   tab that is always appended to the right.
+-- ============================================================
+
+local TAB_ALL = "All"
+local activeTabType  = TAB_ALL
+-- expandedGroups is a set (map of groupName -> true) rather than a single
+-- string, so multiple dropdowns can be open simultaneously.
+local expandedGroups = {}
+
+-- ============================================================
+--  IMMEDIATE PICK TRACKING
+--
+--  justPickedPerks records perk IDs picked in the current
+--  session before the addPerk event has been processed by the
+--  player script. This gives instant visual feedback (grey out)
+--  without waiting a frame for getPlayerPerks() to update.
+--  Cleared at the start of every showPerkUI call.
+-- ============================================================
+
+local justPickedPerks = {}
+
+-- ============================================================
+--  CATEGORY HELPERS
+--
+--  buildCategoryTree() scans all registered perks once and
+--  returns a tree:
+--    tree[typeName][groupName] = { perkID, perkID, ... }
+--  sorted by the per-perk sort order (category[3]).
+--
+--  getTabNames() returns an ordered list of top-level type
+--  names, with TAB_ALL always first on the left, then the rest
+--  in alphabetical order.
+-- ============================================================
+
+local function buildCategoryTree()
+    local tree = {}
+    for _, id in ipairs(interfaces.ErnPerkFramework.getPerkIDs()) do
+        local perkObj = interfaces.ErnPerkFramework.getPerks()[id]
+        local cat = perkObj:category()
+        if cat then
+            local typeName  = cat[1]
+            local groupName = cat[2]
+            if not tree[typeName] then tree[typeName] = {} end
+            if not tree[typeName][groupName] then tree[typeName][groupName] = {} end
+            table.insert(tree[typeName][groupName], id)
+        end
+    end
+    -- Sort each group's perk list by sort order (category[3])
+    for _, groups in pairs(tree) do
+        for _, ids in pairs(groups) do
+            table.sort(ids, function(a, b)
+                local ca = interfaces.ErnPerkFramework.getPerks()[a]:category()
+                local cb = interfaces.ErnPerkFramework.getPerks()[b]:category()
+                return (ca and ca[3] or 0) < (cb and cb[3] or 0)
+            end)
+        end
+    end
+    return tree
+end
+
+local function getTabNames(tree)
+    -- Type-specific tabs are sorted alphabetically and shown first (leftmost).
+    -- TAB_ALL is always last (rightmost) so it reads as a catch-all fallback.
+    local names = {}
+    local sorted = {}
+    for typeName, _ in pairs(tree) do
+        table.insert(sorted, typeName)
+    end
+    table.sort(sorted)
+    for _, n in ipairs(sorted) do
+        table.insert(names, n)
+    end
+    table.insert(names, TAB_ALL)
+    return names
+end
+
+-- ============================================================
+--  PERK LIST CONSTRUCTION
+--
+--  getPerkIDs() was replaced by buildListEntries().
+--
+--  When activeTabType == TAB_ALL:
+--    Flat weighted+alphabetical list identical to original.
+--
+--  When a specific type tab is active:
+--    Groups are shown as collapsible header rows. The expanded
+--    group shows its perks in category sort order.
+--    Perks already taken stay in place and are greyed out.
+--
+--  List entries are tables:
+--    { kind = "perk",   id = perkID }
+--    { kind = "header", group = groupName, expanded = bool }
+-- ============================================================
+
 local satisfiedCache = {}
 local function satisfied(perkID)
     if type(perkID) ~= "string" then
@@ -76,144 +190,273 @@ local function satisfied(perkID)
     end
 end
 
-local weightsCache = {}
--- visiblePerks is a map of perkid -> {}, or nil.
+-- visiblePerks is a map of perkid -> true, or nil (no filter).
 local visiblePerks = nil
-local function getPerkIDs()
-    local sort = function(e)
-        local perkObj = interfaces.ErnPerkFramework.getPerks()[e]
-        if perkObj:active() then
-            return 100
-        end
-        if not satisfied(e) then
-            return 50
-        end
-        if perkObj:cost() > remainingPoints then
-            return 25
-        end
-        return 0
-    end
 
-    local visible = function(id)
-        local perkObj = interfaces.ErnPerkFramework.getPerks()[id]
-        return perkObj:active() or (not perkObj:hidden())
-    end
-    if visiblePerks ~= nil then
-        visible = function(id)
+-- Flat list of entries displayed in the perk list panel.
+-- Each entry is { kind="perk", id=... } or { kind="header", group=..., expanded=... }
+local currentListEntries = {}
+
+local function buildListEntries()
+    local entries = {}
+    local allPerks = interfaces.ErnPerkFramework.getPerks()
+
+    local function isVisible(id)
+        if visiblePerks ~= nil then
             return visiblePerks[id] ~= nil
         end
+        local perkObj = allPerks[id]
+        return perkObj:active() or (not perkObj:hidden())
     end
 
-    local out = {}
-    for _, e in ipairs(interfaces.ErnPerkFramework.getPerkIDs()) do
-        if visible(e) then
-            table.insert(out, e)
-            if weightsCache[e] == nil then
-                weightsCache[e] = sort(e)
+    if activeTabType == TAB_ALL then
+        -- No category filtering: flat weighted+alphabetical list (original behaviour)
+        local weightsCache = {}
+        local function weight(id)
+            if weightsCache[id] ~= nil then return weightsCache[id] end
+            local perkObj = allPerks[id]
+            local w
+            if perkObj:active() or justPickedPerks[id] then
+                w = 100
+            elseif not satisfied(id) then
+                w = 50
+            elseif perkObj:cost() > remainingPoints then
+                w = 25
+            else
+                w = 0
+            end
+            weightsCache[id] = w
+            return w
+        end
+
+        local ids = {}
+        for _, id in ipairs(interfaces.ErnPerkFramework.getPerkIDs()) do
+            if isVisible(id) then
+                table.insert(ids, id)
+            end
+        end
+        table.sort(ids, function(a, b)
+            local wa, wb = weight(a), weight(b)
+            if wa ~= wb then return wa < wb end
+            return allPerks[a]:name() < allPerks[b]:name()
+        end)
+        for _, id in ipairs(ids) do
+            table.insert(entries, { kind = "perk", id = id })
+        end
+    else
+        -- Category tab: header rows + perks inside expanded group
+        local tree = buildCategoryTree()
+        local groups = tree[activeTabType]
+        if groups then
+            local groupNames = {}
+            for g, _ in pairs(groups) do table.insert(groupNames, g) end
+            table.sort(groupNames)
+
+            for _, groupName in ipairs(groupNames) do
+                local expanded = expandedGroups[groupName] == true
+                table.insert(entries, {
+                    kind     = "header",
+                    group    = groupName,
+                    expanded = expanded,
+                })
+                if expanded then
+                    for _, id in ipairs(groups[groupName]) do
+                        if isVisible(id) then
+                            -- indented = true flags this row for left-padding
+                            -- in the renderer, visually nesting it under its header.
+                            table.insert(entries, { kind = "perk", id = id, indented = true })
+                        end
+                    end
+                end
             end
         end
     end
-    table.sort(out, function(a, b)
-        if weightsCache[a] ~= weightsCache[b] then
-            return weightsCache[a] < weightsCache[b]
-        else
-            return interfaces.ErnPerkFramework.getPerks()[a]:name() < interfaces.ErnPerkFramework.getPerks()[b]:name()
-        end
-    end)
-    return out
+
+    currentListEntries = entries
+    return entries
 end
 
--- index of the selected perk, by the full perk list
+-- ============================================================
+--  SELECTION HELPERS
+-- ============================================================
+
 local function getSelectedIndex()
     if perkList ~= nil then
         return perkList.selectedIndex
     end
     return 1
 end
+
+-- Returns the perk object for the currently selected list entry,
+-- or nil if the selection is on a header row.
 local function getSelectedPerk()
-    local selectedPerkID = getPerkIDs()[getSelectedIndex()]
-    return interfaces.ErnPerkFramework.getPerks()[selectedPerkID]
+    local entry = currentListEntries[getSelectedIndex()]
+    if not entry or entry.kind ~= "perk" then return nil end
+    return interfaces.ErnPerkFramework.getPerks()[entry.id]
 end
 
 local function hasPerk(idx)
-    local testID = getPerkIDs()[idx]
+    local entry = currentListEntries[idx]
+    if not entry or entry.kind ~= "perk" then return false end
+    local testID = entry.id
+    -- Check local "just picked" tracking first so the perk greys out
+    -- immediately without waiting for the addPerk event to be processed.
+    if justPickedPerks[testID] then return true end
     for _, foundID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
-        if foundID == testID then
-            return true
-        end
+        if foundID == testID then return true end
     end
     return false
 end
 
--- perkAvailable returns true if the player does not have the perk, but
--- they could learn it.
+-- perkAvailable returns true if the player does not have the perk
+-- and meets all requirements and can afford it.
 local function perkAvailable(perk)
     if perk == nil then
         log(nil, "perkAvailable(nil)")
         return false
     end
     local foundPerk = perk
+    local perkId
     if type(perk) == "string" then
+        perkId   = perk
         foundPerk = interfaces.ErnPerkFramework.getPerks()[perk]
+    else
+        perkId = perk:id()
     end
+    -- A perk picked this session is not available again
+    if justPickedPerks[perkId] then return false end
     return satisfied(foundPerk) and (not foundPerk:active()) and foundPerk:cost() <= remainingPoints
 end
 
-local function pickPerk()
-    local selectedPerk = getSelectedPerk()
-    if selectedPerk ~= nil then
-        log(nil, "Picked perk " .. selectedPerk:id())
-        if perkAvailable(selectedPerk) then
-            log(nil, "Adding perk " .. selectedPerk:id())
-            pself:sendEvent(MOD_NAME .. "addPerk",
-                { perkID = selectedPerk:id() })
-            remainingPoints = remainingPoints - selectedPerk:cost()
-            if remainingPoints <= 0 then
-                pself:sendEvent(MOD_NAME .. "closePerkUI")
-            else
-                -- clone visible perks list.
-                -- this needs to be converted back into a list.
-                local visiblePerksClone = nil
-                if visiblePerks ~= nil then
-                    visiblePerksClone = {}
-                    for k, v in pairs(visiblePerks) do
-                        table.insert(visiblePerksClone, k)
-                    end
-                end
-                -- re-open or refresh the current window
-                pself:sendEvent(MOD_NAME .. "showPerkUI",
-                    { remainingPoints = remainingPoints, visiblePerks = visiblePerksClone })
-            end
+-- ============================================================
+--  AVAILABILITY HELPERS
+--
+--  Defined here, after perkAvailable(), so they can call it.
+--  Used to decide whether tabs and group headers should be
+--  greyed out and non-interactive.
+--
+--  groupHasAvailablePerk(tree, typeName, groupName)
+--    Returns true if at least one perk in the specific group
+--    passes perkAvailable().
+--
+--  tabHasAvailablePerk(tree, typeName)
+--    Returns true if any group in the tab has an available perk.
+--    TAB_ALL always returns true (it never blocks navigation).
+--
+--  Both read satisfiedCache via perkAvailable(), so repeated
+--  calls within the same redraw are cheap.
+-- ============================================================
+
+local function groupHasAvailablePerk(tree, typeName, groupName)
+    local groups = tree[typeName]
+    if not groups then return false end
+    local ids = groups[groupName]
+    if not ids then return false end
+    for _, id in ipairs(ids) do
+        if perkAvailable(id) then return true end
+    end
+    return false
+end
+
+local function tabHasAvailablePerk(tree, typeName)
+    if typeName == TAB_ALL then return true end
+    local groups = tree[typeName]
+    if not groups then return false end
+    for groupName, _ in pairs(groups) do
+        if groupHasAvailablePerk(tree, typeName, groupName) then
+            return true
         end
     end
+    return false
 end
 
-local pickButtonElement = ui.create {}
+-- ============================================================
+--  TAB BAR UI
+--
+--  A horizontal row of text buttons, one per tab name.
+--  The active tab is highlighted. Clicking a tab sets
+--  A horizontal row of text buttons, one per tab name.
+--  The active tab is highlighted. Tabs with no acquirable perks
+--  are greyed and non-interactive. Clicking a live tab sets
+--  activeTabType, collapses all expandedGroups, resets list
+--  selection, and triggers a redraw via the internal event.
+-- ============================================================
 
-local function updatePickButtonElement()
-    --pickButtonElement:destroy()
-    local color = 'normal'
-    local cost = 1
-    local selectedPerk = getSelectedPerk()
-    if selectedPerk ~= nil then
-        cost = selectedPerk:cost()
+local tabBarElement = ui.create {
+    type = ui.TYPE.Flex,
+    props = { horizontal = true },
+}
+
+-- buildTabBar now takes the pre-built tree so it can check per-tab
+-- availability without rebuilding it a second time.
+local function buildTabBar(tabNames, tree)
+    local content = ui.content {}
+    for _, tabName in ipairs(tabNames) do
+        local isActive    = (tabName == activeTabType)
+        local hasAvail    = tabHasAvailablePerk(tree, tabName)
+
+        -- Colour logic:
+        --   active   = currently selected tab
+        --   normal   = selectable, has available perks (or is TAB_ALL)
+        --   disabled = no acquirable perks in this tab right now
+        local color
+        if isActive then
+            color = 'active'
+        elseif hasAvail then
+            color = 'normal'
+        else
+            color = 'disabled'
+        end
+
+        local btn = ui.create {}
+        local capturedTab = tabName
+        local clickFn
+        if hasAvail and not isActive then
+            -- Only wire up a click handler when the tab is selectable
+            clickFn = function()
+                activeTabType  = capturedTab
+                expandedGroups = {}
+                if perkList then perkList.selectedIndex = 1 end
+                pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
+            end
+        else
+            -- Disabled or already-active tabs do nothing on click
+            clickFn = function() end
+        end
+
+        btn.layout = myui.createTextButtonBorderless(
+            btn,
+            capturedTab,
+            color,
+            'tab_' .. capturedTab,
+            {},
+            util.vector2(0, 17),   -- width 0 = auto-size to text
+            clickFn,
+            {})
+        btn:update()
+        content:add(btn)
+        content:add(myui.padWidget(4, 0))
     end
-    if not perkAvailable(selectedPerk) then
-        color = 'disabled'
-    end
-    pickButtonElement.layout = myui.createTextButton(
-        pickButtonElement,
-        localization('pickButton', { cost = cost, available = remainingPoints }),
-        color,
-        'pickButton',
-        {},
-        util.vector2(129, 17),
-        pickPerk)
-    pickButtonElement:update()
+
+    tabBarElement.layout = {
+        type  = ui.TYPE.Flex,
+        props = {
+            horizontal   = true,
+            relativeSize = util.vector2(1, 0),
+        },
+        content = content,
+    }
+    tabBarElement:update()
 end
-updatePickButtonElement()
 
--- viewPerk shows the perk details after a click on a button or redraw
+-- ============================================================
+--  PERK LIST RENDERER
+--
+--  Each slot in the perkList is one entry from currentListEntries.
+--  Header rows show a > / v toggle for the group name.
+--  Perk rows show the perk name button, greyed if taken/locked.
+-- ============================================================
+
 local function viewPerk(perkID, idx)
     if type(idx) ~= "number" then
         error("idx must be a number")
@@ -230,60 +473,248 @@ local function viewPerk(perkID, idx)
         error("bad perk: " .. tostring(perkID))
         return
     end
+
+    -- Update the selected index so the list re-renders with the correct
+    -- highlighted row, and so getSelectedPerk() returns the right perk.
     if perkList ~= nil then
         perkList.selectedIndex = idx
     end
 
     log(nil, "Showing detail for perk " .. foundPerk:name())
+
+    -- Update the detail panel and "have this perk" notice directly — these
+    -- are safe to call from inside a UI callback because they are separate
+    -- elements not currently being rendered.
     perkDetailElement.layout = foundPerk:detailLayout()
     perkDetailElement:update()
-    if perkList ~= nil then
-        perkList:setSelectedIndex(idx)
-        perkList:update()
-    end
 
     haveThisPerk.layout.props.visible = hasPerk(getSelectedIndex())
     haveThisPerk:update()
 
-    updatePickButtonElement()
+    -- Defer the list re-render and pick-button cost update to the next tick
+    -- via _internalRedraw. Calling element:update() on elements that are
+    -- part of the currently-firing button event causes re-entrancy issues
+    -- in OpenMW's UI system (frozen input, disappearing widgets).
+    pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
 end
 
--- perkNameElement renders a perk button in a list
-local function perkNameElement(perkObj, idx)
-    --print("making Element for " .. perkObj:id() .. " at idx " .. idx)
-    -- this is the perk name as it appears in the selection list.
+-- Renders one row in the perkList.
+-- tree is passed in from redraw() so we can call the availability helpers
+-- without rebuilding it for every row.
+local function renderListEntry(idx, isSelected, tree)
+    local entry = currentListEntries[idx]
+    if not entry then
+        return ui.create { type = ui.TYPE.Widget, props = { size = util.vector2(0, 17) } }
+    end
+
+    if entry.kind == "header" then
+        -- Group header row.
+        -- Check whether this group has any acquirable perks so we can
+        -- grey it out and prevent expanding an empty/locked group.
+        local hasAvail      = groupHasAvailablePerk(tree, activeTabType, entry.group)
+        local isExpanded    = expandedGroups[entry.group] == true
+        local arrow         = isExpanded and "v " or "> "
+        local label         = arrow .. entry.group
+        local capturedGroup = entry.group
+
+        local color
+        if hasAvail then
+            color = 'normal'
+        else
+            color = 'disabled'
+        end
+
+        local clickFn
+        if hasAvail then
+            clickFn = function()
+                -- Toggle this group without affecting any others
+                if expandedGroups[capturedGroup] then
+                    expandedGroups[capturedGroup] = nil
+                else
+                    expandedGroups[capturedGroup] = true
+                end
+                -- Don't reset selectedIndex so the cursor stays where it was
+                pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
+            end
+        else
+            clickFn = function() end
+        end
+
+        local btn = ui.create {}
+        btn.layout = myui.createTextButtonBorderless(
+            btn,
+            label,
+            color,
+            'header_' .. capturedGroup,
+            {},
+            util.vector2(129, 17),
+            clickFn,
+            {})
+        btn:update()
+        return btn
+    else
+        -- Perk row.
+        local perkObj = interfaces.ErnPerkFramework.getPerks()[entry.id]
+        local color = 'normal'
+        if isSelected then
+            color = 'active'
+        elseif hasPerk(idx) then
+            -- Already taken: grey out, stay in place
+            color = 'disabled'
+        elseif not satisfied(entry.id) then
+            color = 'disabled'
+        end
+
+        local capturedId  = entry.id
+        local capturedIdx = idx
+        local btn = ui.create {}
+        btn.layout = myui.createTextButtonBorderless(
+            btn,
+            perkObj:name(),
+            color,
+            'selectButton_' .. capturedId,
+            {},
+            util.vector2(129, 17),
+            viewPerk,
+            { capturedId, capturedIdx })
+        btn:update()
+
+        -- Indent perk rows that live inside an open dropdown group.
+        -- We wrap the button in a horizontal Flex with a fixed left pad,
+        -- giving a clear visual hierarchy without changing button widths.
+        if entry.indented then
+            local wrapper = ui.create {
+                type  = ui.TYPE.Flex,
+                props = { horizontal = true },
+                content = ui.content {
+                    myui.padWidget(16, 0),   -- 16px left indent
+                    btn,
+                },
+            }
+            wrapper:update()
+            return wrapper
+        end
+
+        return btn
+    end
+end
+
+-- ============================================================
+--  PICK PERK
+--
+--  doPick() is a standalone function called from both the
+--  pick button and the keyboard Enter handler.
+--
+--  After the perk is added we immediately record it in
+--  justPickedPerks and call redraw() so the list greys out
+--  the entry in the same frame, without waiting for the
+--  addPerk player event to propagate.
+-- ============================================================
+
+local function doPick()
+    local sp = getSelectedPerk()
+    if sp == nil or not perkAvailable(sp) then return end
+
+    local perkID = sp:id()
+    log(nil, "Adding perk " .. perkID)
+
+    -- Track locally so hasPerk() returns true immediately
+    justPickedPerks[perkID] = true
+    remainingPoints = remainingPoints - sp:cost()
+
+    -- Send the actual add event (processed this frame, before next redraw)
+    pself:sendEvent(MOD_NAME .. "addPerk", { perkID = perkID })
+
+    -- Invalidate the satisfied cache so the list reflects new state
+    satisfiedCache = {}
+
+    if remainingPoints <= 0 then
+        pself:sendEvent(MOD_NAME .. "closePerkUI")
+    else
+        -- Immediately rebuild and redraw so the acquired perk is greyed out
+        -- without the player needing to click anything else first.
+        pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
+    end
+end
+
+-- ============================================================
+--  BUTTON ELEMENTS
+--
+--  Pick button:   "Cost: X  Acquire" (greyed when unavailable)
+--  Cancel button: "Exit"
+--
+--  remainingPointsElement is also refreshed here since it
+--  belongs logically to the same "what can I do" area.
+-- ============================================================
+
+local pickButtonElement = ui.create {}
+
+local function updatePickButtonElement()
     local color = 'normal'
-    if idx == getSelectedIndex() then
-        color = 'active'
-    elseif hasPerk(idx) then
-        color = 'disabled'
-    elseif not satisfied(perkObj) then
+    local selectedPerk = getSelectedPerk()
+    local btnText
+
+    if selectedPerk ~= nil then
+        local cost = selectedPerk:cost()
+        btnText = "Cost: " .. tostring(cost) .. "  Acquire"
+    else
+        btnText = "Acquire"
+    end
+
+    if not perkAvailable(selectedPerk) then
         color = 'disabled'
     end
 
-    local selectButton = ui.create {}
-    selectButton.layout = myui.createTextButtonBorderless(
-        selectButton,
-        perkObj:name(),
+    pickButtonElement.layout = myui.createTextButton(
+        pickButtonElement,
+        btnText,
         color,
-        'selectButton_' .. perkObj:id(),
+        'pickButton',
         {},
         util.vector2(129, 17),
-        viewPerk,
-        { perkObj:id(), idx })
-    selectButton:update()
-    return selectButton
+        doPick)
+    pickButtonElement:update()
+
+    -- Update the remaining perk points display
+    local pts    = remainingPoints
+    local plural = pts == 1 and "" or "s"
+    remainingPointsElement.layout.props.text =
+        tostring(pts) .. " Perk Point" .. plural .. " Remaining"
+    remainingPointsElement:update()
 end
+updatePickButtonElement()
+
+local cancelButtonElement = ui.create {}
+cancelButtonElement.layout = myui.createTextButton(
+    cancelButtonElement,
+    "Exit",
+    'normal',
+    'cancelButton',
+    {},
+    util.vector2(129, 17),
+    function() pself:sendEvent(MOD_NAME .. "closePerkUI", {}) end)
+cancelButtonElement:update()
+
+-- ============================================================
+--  PERK LIST WIDGET
+-- ============================================================
+
+-- cachedTree is set at the start of each redraw() so renderListEntry
+-- can call the availability helpers without rebuilding the tree per row.
+local cachedTree = {}
 
 perkList = list.NewList(
     function(idx)
         if type(idx) ~= "number" then
             error("idx must be a number")
         end
-        local perkIDs = getPerkIDs()
-        return perkNameElement(interfaces.ErnPerkFramework.getPerks()[perkIDs[idx]], idx)
+        return renderListEntry(idx, idx == getSelectedIndex(), cachedTree)
     end
 )
+
+-- ============================================================
+--  CLOSE UI
+-- ============================================================
 
 local function closeUI()
     if menu ~= nil then
@@ -301,91 +732,157 @@ local function closeUI()
     end
 end
 
-local cancelButtonElement = ui.create {}
-cancelButtonElement.layout = myui.createTextButton(
-    cancelButtonElement,
-    localization('cancelButton'),
-    'normal',
-    'cancelButton',
-    {},
-    util.vector2(129, 17),
-    closeUI)
-cancelButtonElement:update()
+-- ============================================================
+--  LAYOUT
+--
+--  Structure (vertical outerFlex):
+--    Tab bar row
+--    mainFlex (horizontal):
+--      [Left]  perkList
+--      [Right] Vertical detail flex (arrange=Start):
+--                perkDetailElement  (natural height)
+--                haveThisPerk
+--                grow spacer        (pushes bottom section down)
+--                remainingPointsElement
+--                pad
+--                buttons row
+--                pad
+--
+--  Using arrange=Start and a grow spacer ensures the buttons
+--  are always anchored to the bottom of the panel regardless
+--  of how much detail content is present.
+-- ============================================================
 
 local function menuLayout()
     return {
         layer = 'Windows',
-        name = 'menuContainer',
-        type = ui.TYPE.Container,
+        name  = 'menuContainer',
+        type  = ui.TYPE.Container,
         template = interfaces.MWUI.templates.boxTransparentThick,
         props = {
-            horizontal = true,
-            autoSize = false,
-
+            horizontal      = true,
+            autoSize        = false,
             relativePosition = util.vector2(0.5, 0.5),
-            anchor = util.vector2(0.5, 0.5)
-            --relativeSize = util.vector2(1, 1) --* settings.uiScale,
+            anchor          = util.vector2(0.5, 0.5),
         },
         content = ui.content {
             {
-                name = 'padding',
-                type = ui.TYPE.Container,
+                name     = 'padding',
+                type     = ui.TYPE.Container,
                 template = myui.padding(8, 8),
-                content = ui.content {
+                content  = ui.content {
                     {
-                        name = 'mainFlex',
-                        type = ui.TYPE.Flex,
+                        name  = 'outerFlex',
+                        type  = ui.TYPE.Flex,
                         props = {
-                            horizontal = true,
-                            autoSize = false,
-                            size = util.vector2(600, 480),
+                            horizontal = false,
+                            autoSize   = false,
+                            size       = util.vector2(700, 510),
                         },
                         content = ui.content {
-                            perkList.root,
-                            myui.padWidget(8, 0),
+                            -- Tab bar across the top
+                            tabBarElement,
+                            myui.padWidget(0, 4),
                             {
-                                -- detail page section
-                                type = ui.TYPE.Flex,
+                                name  = 'mainFlex',
+                                type  = ui.TYPE.Flex,
                                 props = {
-                                    arrange = ui.ALIGNMENT.Center,
-                                    relativeSize = util.vector2(1, 1),
+                                    horizontal = true,
+                                    autoSize   = false,
+                                    size       = util.vector2(700, 480),
                                 },
                                 external = { grow = 1 },
-                                content = ui.content {
-                                    perkDetailElement,
-                                    myui.padWidget(0, 8),
-                                    haveThisPerk,
-                                    myui.padWidget(0, 8),
+                                content  = ui.content {
+                                    -- Left: perk list
+                                    perkList.root,
+                                    myui.padWidget(8, 0),
+                                    -- Right: detail panel, buttons anchored to bottom
                                     {
-                                        type = ui.TYPE.Flex,
+                                        type  = ui.TYPE.Flex,
                                         props = {
-                                            horizontal = true,
+                                            -- arrange=Start so children stack from top;
+                                            -- the grow spacer below pushes the button
+                                            -- row to the very bottom of this panel.
+                                            arrange      = ui.ALIGNMENT.Start,
+                                            horizontal   = false,
+                                            relativeSize = util.vector2(1, 1),
                                         },
-                                        content = ui.content {
-                                            pickButtonElement,
-                                            myui.padWidget(8, 0),
-                                            cancelButtonElement
+                                        external = { grow = 1 },
+                                        content  = ui.content {
+                                            -- Perk detail + "you have this" notice
+                                            perkDetailElement,
+                                            myui.padWidget(0, 4),
+                                            haveThisPerk,
+                                            -- Grow spacer: absorbs all remaining
+                                            -- vertical space, pinning everything
+                                            -- below it to the bottom of the panel.
+                                            {
+                                                type     = ui.TYPE.Widget,
+                                                props    = {},
+                                                external = { grow = 1 },
+                                            },
+                                            -- Remaining points + action buttons
+                                            remainingPointsElement,
+                                            myui.padWidget(0, 6),
+                                            {
+                                                type    = ui.TYPE.Flex,
+                                                props   = { horizontal = true },
+                                                content = ui.content {
+                                                    pickButtonElement,
+                                                    myui.padWidget(8, 0),
+                                                    cancelButtonElement,
+                                                },
+                                            },
+                                            myui.padWidget(0, 8),
                                         },
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
     }
 end
 
-local function drawPerksList()
-    local perkIDs = getPerkIDs()
-    perkList:setTotal(#perkIDs)
-    perkList:update()
-end
+-- ============================================================
+--  REDRAW
+-- ============================================================
 
 local function redraw()
-    drawPerksList()
-    viewPerk(getSelectedPerk(), getSelectedIndex())
+    -- Build the category tree once per redraw; shared by the tab bar,
+    -- the list renderer (via cachedTree), and the availability helpers.
+    cachedTree = buildCategoryTree()
+    local tabNames = getTabNames(cachedTree)
+
+    -- Rebuild entry list for current tab/group state
+    buildListEntries()
+
+    -- Rebuild and update the tab bar, passing the tree for availability checks
+    buildTabBar(tabNames, cachedTree)
+
+    -- Update perk list widget
+    perkList:setTotal(#currentListEntries)
+    perkList:update()
+
+    -- Update detail panel for the current selection
+    local selectedPerk = getSelectedPerk()
+    if selectedPerk ~= nil then
+        perkDetailElement.layout = selectedPerk:detailLayout()
+        perkDetailElement:update()
+        haveThisPerk.layout.props.visible = hasPerk(getSelectedIndex())
+        haveThisPerk:update()
+    else
+        -- Selection is on a header: clear the detail panel
+        perkDetailElement.layout = {
+            name = "detailLayout",
+            type = ui.TYPE.Flex,
+        }
+        perkDetailElement:update()
+        haveThisPerk.layout.props.visible = false
+        haveThisPerk:update()
+    end
 
     updatePickButtonElement()
 
@@ -394,19 +891,22 @@ local function redraw()
     end
 end
 
+-- ============================================================
+--  SHOW PERK UI
+-- ============================================================
+
 local debounce = 0
 
 local function showPerkUI(data)
-    -- prevent input for 5 frames. this is here to stop accidental "Enter" keys
-    -- from triggereing when entering the ui from the console.
+    -- Prevent input for 5 frames to stop accidental Enter from console.
     debounce = DEBOUNCE_FRAMES
-    weightsCache = {}
-    satisfiedCache = {}
+    satisfiedCache  = {}
+    justPickedPerks = {}  -- clear pick tracking for the new session
 
     remainingPoints = interfaces.ErnPerkFramework.totalAllowedPoints() -
         interfaces.ErnPerkFramework.currentSpentPoints()
 
-    -- Set the filter, if there is one.
+    -- Set the external perk-id filter, if provided.
     if data.visiblePerks ~= nil then
         if (type(data.visiblePerks) ~= "table") then
             error("showPerkUI(): expected visiblePerks to be a list, not a " .. type(data.visiblePerks))
@@ -422,17 +922,15 @@ local function showPerkUI(data)
         visiblePerks = nil
     end
 
-    local allPerkIDs = getPerkIDs()
-    if #allPerkIDs == 0 then
-        log(nil, "No perks found.")
-        return
-    end
-
-    -- Quit if this is the normal window and nothing is available.
+    -- Check availability against ALL perks regardless of the active tab.
+    -- This ensures the UI opens even if the currently selected tab has no
+    -- available perks (e.g. all Faction perks are locked but a Trait perk is free).
     if visiblePerks == nil then
         local aPerkIsAvailable = false
-        for _, id in ipairs(allPerkIDs) do
-            if perkAvailable(id) then
+        local allPerks = interfaces.ErnPerkFramework.getPerks()
+        for _, id in ipairs(interfaces.ErnPerkFramework.getPerkIDs()) do
+            local perkObj = allPerks[id]
+            if not perkObj:hidden() and perkAvailable(id) then
                 aPerkIsAvailable = true
                 break
             end
@@ -444,23 +942,33 @@ local function showPerkUI(data)
     end
 
     if menu == nil then
+        -- First open: default to the leftmost tab (index 1), which is the
+        -- first alphabetical type-specific category. TAB_ALL sits on the
+        -- right as a catch-all the player can navigate to if they want the
+        -- unfiltered view.
+        local tree     = buildCategoryTree()
+        local tabNames = getTabNames(tree)
+        activeTabType  = tabNames[1]
+        expandedGroups = {}
+
         interfaces.UI.setMode('Interface', { windows = {} })
         log(nil, "Showing Perk UI...")
-
         perkList.selectedIndex = 1
         menu = ui.create(menuLayout())
         redraw()
     else
+        -- Already open (e.g. after acquiring a perk with points remaining):
+        -- keep the current tab and groups, just refresh everything.
         redraw()
     end
 end
 
+-- ============================================================
+--  INPUT
+-- ============================================================
 
 local function onMouseWheel(direction)
-    if menu == nil then
-        -- If the menu is not up, ignore the mouse wheel.
-        return
-    end
+    if menu == nil then return end
     if direction < 0 then
         perkList:scroll(1)
     else
@@ -469,14 +977,13 @@ local function onMouseWheel(direction)
     redraw()
 end
 
-local keyEnterStatus = false
+local keyEnterStatus  = false
 local keyEscapeStatus = false
-local keyDownStatus = false
-local keyUpStatus = false
+local keyDownStatus   = false
+local keyUpStatus     = false
+
 local function onFrame(dt)
-    if menu == nil then
-        return
-    end
+    if menu == nil then return end
     myui.processButtonAction(dt)
 
     if debounce > 0 then
@@ -485,30 +992,42 @@ local function onFrame(dt)
     end
 
     if input.isKeyPressed(input.KEY.DownArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadDown) then
-        perkList:scroll(-1)
-        debounce = keyDownStatus and DEBOUNCE_FRAMES or 5*DEBOUNCE_FRAMES
+        perkList:scroll(1)
+        debounce = keyDownStatus and DEBOUNCE_FRAMES or 5 * DEBOUNCE_FRAMES
         keyDownStatus = true
         redraw()
     else
         keyDownStatus = false
     end
     if input.isKeyPressed(input.KEY.UpArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadUp) then
-        perkList:scroll(1)
-        debounce = keyUpStatus and DEBOUNCE_FRAMES or 5*DEBOUNCE_FRAMES
+        perkList:scroll(-1)
+        debounce = keyUpStatus and DEBOUNCE_FRAMES or 5 * DEBOUNCE_FRAMES
         keyUpStatus = true
         redraw()
     else
         keyUpStatus = false
     end
 
-    -- x on playstation is south. trigger on falling edge.
+    -- Enter / A: pick perk or toggle header (trigger on key release)
     if input.isKeyPressed(input.KEY.Enter) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.A) then
         keyEnterStatus = true
     elseif keyEnterStatus == true then
-        pickPerk()
+        local entry = currentListEntries[getSelectedIndex()]
+        if entry and entry.kind == "header" then
+            -- Toggle expand/collapse for this group without affecting others
+            if expandedGroups[entry.group] then
+                expandedGroups[entry.group] = nil
+            else
+                expandedGroups[entry.group] = true
+            end
+            redraw()
+        else
+            doPick()
+        end
         keyEnterStatus = false
     end
-    -- o on playstation is east. trigger on falling edge.
+
+    -- Escape / B: close
     if input.isKeyPressed(input.KEY.Escape) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.B) then
         keyEscapeStatus = true
     elseif keyEscapeStatus then
@@ -517,13 +1036,22 @@ local function onFrame(dt)
     end
 end
 
+-- Internal event fired by tab buttons and group header buttons to trigger a
+-- redraw from within a UI callback. Callbacks cannot call redraw() directly
+-- because the UI is mid-update at that point; deferring via a player event
+-- guarantees the redraw happens in the next safe tick.
+local function onInternalRedraw()
+    redraw()
+end
+
 return {
     eventHandlers = {
-        [MOD_NAME .. "showPerkUI"] = showPerkUI,
-        [MOD_NAME .. "closePerkUI"] = closeUI,
+        [MOD_NAME .. "showPerkUI"]      = showPerkUI,
+        [MOD_NAME .. "closePerkUI"]     = closeUI,
+        [MOD_NAME .. "_internalRedraw"] = onInternalRedraw,
     },
     engineHandlers = {
-        onFrame = onFrame,
+        onFrame      = onFrame,
         onMouseWheel = onMouseWheel,
     }
 }

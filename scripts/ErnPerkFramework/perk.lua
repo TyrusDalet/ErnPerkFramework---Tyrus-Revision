@@ -15,7 +15,7 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ]]
-local MOD_NAME = require("scripts.ErnPerkFramework.ns")
+local MOD_NAME = require("scripts.ErnPerkFramework.settings").MOD_NAME
 local interfaces = require("openmw.interfaces")
 local ui = require('openmw.ui')
 local vfs = require('openmw.vfs')
@@ -127,6 +127,15 @@ function PerkFunctions.description(self)
         description = resolve(self.record.localizedDescription)
     end
     return description
+end
+
+
+--- Gets the category of the perk, or nil if none was specified.
+--- Returns the raw 3-element table { typeName, groupName, sortOrder }.
+--- @param self table The perk object.
+--- @return table|nil The category table, or nil.
+function PerkFunctions.category(self)
+    return self.record.category
 end
 
 -- Returns true if the player currently has the perk.
@@ -293,7 +302,9 @@ function PerkFunctions.requirementsLayout(self)
         props = {
             arrange = ui.ALIGNMENT.Start,
             horizontal = true,
-            --relativeSize = util.vector2(1, 1),
+            -- relativeSize width=1 propagates a concrete pixel width down to
+            -- the text widgets inside, which is what makes word-wrap work.
+            relativeSize = util.vector2(1, 0),
         },
         content = ui.content {
             myui.padWidget(8, 0),
@@ -312,16 +323,17 @@ function PerkFunctions.detailLayout(self)
         name = "detailLayout",
         type = ui.TYPE.Flex,
         props = {
-            arrange = ui.ALIGNMENT.Start,
-            horizontal = false,
-            autoSize = false,
+            arrange      = ui.ALIGNMENT.Start,
+            horizontal   = false,
+            -- autoSize=false + relativeSize(1,1): the flex fills its parent
+            -- completely, giving it a concrete pixel size. Children that use
+            -- relativeSize(1,0) will then inherit that concrete width and
+            -- word-wrap correctly.
+            autoSize     = false,
             relativeSize = util.vector2(1, 1),
-            anchor = util.vector2(0.5, 0),
-            relativePosition = util.vector2(0.5, 0),
         },
         external = {
             grow = 1,
-            --stretch = 1
         },
         content = ui.content {},
     }
@@ -356,31 +368,30 @@ function PerkFunctions.detailLayout(self)
         props = {
             arrange = ui.ALIGNMENT.Start,
             horizontal = true,
-            --relativeSize = util.vector2(1, 1),
+            -- Width propagation: needed so the inner text widget wraps.
+            relativeSize = util.vector2(1, 0),
         },
         content = ui.content {
             myui.padWidget(8, 0),
             {
                 template = interfaces.MWUI.templates.textParagraph,
-                --type = ui.TYPE.Text,
                 alignment = ui.ALIGNMENT.Start,
                 props = {
-                    --autoSize = false,
-                    --relativeSize = util.vector2(0, 1),
                     textAlignH = ui.ALIGNMENT.Start,
                     textAlignV = ui.ALIGNMENT.Start,
-                    --relativePosition = util.vector2(0, 0.5),
                     text = self:description(),
+                    -- Width = 100% of parent so text wraps within the panel.
+                    -- Height = auto (0) so the widget expands to fit all text
+                    -- rather than being clipped by the panel height.
+                    relativeSize = util.vector2(1, 0),
                 },
                 external = {
                     grow = 1,
-                    stretch = 1,
                 }
             }
         },
         external = {
             grow = 1,
-            stretch = 1,
         }
     }
 

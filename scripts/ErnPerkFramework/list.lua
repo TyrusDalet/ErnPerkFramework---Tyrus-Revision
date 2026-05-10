@@ -15,7 +15,7 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ]]
-local MOD_NAME = require("scripts.ErnPerkFramework.ns")
+local MOD_NAME = require("scripts.ErnPerkFramework.settings").MOD_NAME
 local interfaces = require("openmw.interfaces")
 local ui = require('openmw.ui')
 local util = require('openmw.util')
@@ -100,7 +100,8 @@ function NewList(renderer, props)
 end
 
 function ListFunctions.clamp(self, index)
-    return ((index - 1) % self.totalCount) + 1
+    -- Hard clamp to [1, totalCount]: no wrap-around at either end.
+    return math.max(1, math.min(self.totalCount, index))
 end
 
 function ListFunctions.destroy(self)
