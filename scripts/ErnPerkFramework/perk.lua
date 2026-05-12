@@ -27,6 +27,13 @@ local myui = require('scripts.ErnPerkFramework.pcp.myui')
 local PerkFunctions = {}
 PerkFunctions.__index = PerkFunctions
 
+local DETAIL_TEXT_WIDTH = 500
+local REQUIREMENT_LINE_HEIGHT = 24
+local REQUIREMENT_CHARS_PER_LINE = 58
+local FLAVOUR_TEXT_HEIGHT = 48
+local DESCRIPTION_TEXT_HEIGHT = 210
+local ART_SIZE = util.vector2(224, 112)
+
 --- Resolves a field that might be a literal value or a function that returns a value.
 --- @param field any A literal value or a function.
 --- @return any The value of the field, or the return value of the function.
@@ -36,6 +43,15 @@ local function resolve(field)
     else
         return field
     end
+end
+
+local function wrappedTextHeight(text, charsPerLine, lineHeight)
+    local lineCount = 0
+    text = tostring(text or "")
+    for line in (text .. "\n"):gmatch("(.-)\n") do
+        lineCount = lineCount + math.max(1, math.ceil(#line / charsPerLine))
+    end
+    return lineCount * lineHeight
 end
 
 --- NewPerk makes a new perk object from a record data table.
@@ -129,6 +145,23 @@ function PerkFunctions.description(self)
     return description
 end
 
+--- Gets the localized flavour text of the perk, if any.
+--- Supports both localizedFlavour and localizedFlavor spellings.
+--- @param self table The perk object.
+--- @return string|nil The perk's flavour text.
+function PerkFunctions.flavour(self)
+    local flavour = self.record.localizedFlavour
+    if flavour == nil then
+        flavour = self.record.localizedFlavor
+    end
+    if flavour ~= nil then
+        flavour = resolve(flavour)
+    end
+    if flavour == "" then
+        flavour = nil
+    end
+    return flavour
+end
 
 --- Gets the category of the perk, or nil if none was specified.
 --- Returns the raw 3-element table { typeName, groupName, sortOrder }.
@@ -212,7 +245,7 @@ function PerkFunctions.artLayout(self)
             resource = ui.texture {
                 path = path
             },
-            size = util.vector2(256, 128),
+            size = ART_SIZE,
             relativePosition = util.vector2(0.5, 0),
             anchor = util.vector2(0.5, 0),
         },
@@ -227,8 +260,8 @@ function PerkFunctions.artLayout(self)
         type = ui.TYPE.Widget,
         props = {
             arrange = ui.ALIGNMENT.Center,
-            relativeSize = util.vector2(1, 0),
-            size = util.vector2(0, 128),
+            autoSize = false,
+            size = util.vector2(DETAIL_TEXT_WIDTH + 8, ART_SIZE.y),
         },
         external = { grow = 0 },
         content = ui.content { img }
@@ -260,11 +293,13 @@ function PerkFunctions.requirementsLayout(self)
             --type = ui.TYPE.Text,
             alignment = ui.ALIGNMENT.End,
             props = {
+                autoSize = false,
+                multiline = true,
+                wordWrap = true,
                 textAlignH = ui.ALIGNMENT.Start,
                 textAlignV = ui.ALIGNMENT.Start,
                 --relativePosition = util.vector2(0, 0.5),
                 text = req.name,
-                relativeSize = util.vector2(1, 0),
             },
         }
         if not req.satisfied then
@@ -275,6 +310,9 @@ function PerkFunctions.requirementsLayout(self)
         if hide then
             reqLayout.props.text = localization("hiddenRequirement", {})
         end
+        reqLayout.props.size = util.vector2(
+            DETAIL_TEXT_WIDTH,
+            wrappedTextHeight(reqLayout.props.text, REQUIREMENT_CHARS_PER_LINE, REQUIREMENT_LINE_HEIGHT))
 
         vFlexLayout.content:add(reqLayout)
     end
@@ -286,13 +324,18 @@ function PerkFunctions.requirementsLayout(self)
             --type = ui.TYPE.Text,
             alignment = ui.ALIGNMENT.End,
             props = {
+                autoSize = false,
+                multiline = true,
+                wordWrap = true,
                 textAlignH = ui.ALIGNMENT.Start,
                 textAlignV = ui.ALIGNMENT.Start,
                 --relativePosition = util.vector2(0, 0.5),
                 text = localization("noRequirement", {}),
-                relativeSize = util.vector2(1, 0),
             },
         }
+        reqLayout.props.size = util.vector2(
+            DETAIL_TEXT_WIDTH,
+            wrappedTextHeight(reqLayout.props.text, REQUIREMENT_CHARS_PER_LINE, REQUIREMENT_LINE_HEIGHT))
         vFlexLayout.content:add(reqLayout)
     end
 
@@ -318,18 +361,18 @@ end
 --- Creates the full detail UI layout for the perk, including art, requirements, name, and description.
 --- @param self table The perk object.
 --- @return table The OpenMW UI layout table for the perk details panel.
-function PerkFunctions.detailLayout(self)
+function PerkFunctions.detailLayout(self, descriptionText)
     local vFlexLayout = {
         name = "detailLayout",
         type = ui.TYPE.Flex,
         props = {
             arrange      = ui.ALIGNMENT.Start,
             horizontal   = false,
-            -- autoSize=false + relativeSize(1,1): the flex fills its parent
-            -- completely, giving it a concrete pixel size. Children that use
-            -- relativeSize(1,0) will then inherit that concrete width and
-            -- word-wrap correctly.
             autoSize     = false,
+            -- relativeSize(1,1): fills the top content section, which has a
+            -- concrete pixel size from grow=1 on its parent. This gives all
+            -- text children a concrete pixel width for word-wrap, and a
+            -- concrete height so the art widget and description are visible.
             relativeSize = util.vector2(1, 1),
         },
         external = {
@@ -362,6 +405,37 @@ function PerkFunctions.detailLayout(self)
         },
     }
 
+    local flavourText = self:flavour()
+    local paddedFlavourText = nil
+    if flavourText ~= nil then
+        paddedFlavourText = {
+            name = "flavourText",
+            type = ui.TYPE.Flex,
+            props = {
+                arrange = ui.ALIGNMENT.Start,
+                horizontal = true,
+                relativeSize = util.vector2(1, 0),
+            },
+            content = ui.content {
+                myui.padWidget(8, 0),
+                {
+                    template = interfaces.MWUI.templates.textParagraph,
+                    alignment = ui.ALIGNMENT.Start,
+                    props = {
+                        autoSize = false,
+                        multiline = true,
+                        wordWrap = true,
+                        textAlignH = ui.ALIGNMENT.Start,
+                        textAlignV = ui.ALIGNMENT.Start,
+                        textColor = myui.interactiveTextColors.disabled.default,
+                        text = flavourText,
+                        size = util.vector2(DETAIL_TEXT_WIDTH, FLAVOUR_TEXT_HEIGHT),
+                    },
+                }
+            },
+        }
+    end
+
     local paddedDetailText = {
         name = "vflex",
         type = ui.TYPE.Flex,
@@ -377,29 +451,27 @@ function PerkFunctions.detailLayout(self)
                 template = interfaces.MWUI.templates.textParagraph,
                 alignment = ui.ALIGNMENT.Start,
                 props = {
+                    autoSize = false,
+                    multiline = true,
+                    wordWrap = true,
                     textAlignH = ui.ALIGNMENT.Start,
                     textAlignV = ui.ALIGNMENT.Start,
-                    text = self:description(),
-                    -- Width = 100% of parent so text wraps within the panel.
-                    -- Height = auto (0) so the widget expands to fit all text
-                    -- rather than being clipped by the panel height.
-                    relativeSize = util.vector2(1, 0),
+                    text = descriptionText or self:description(),
+                    size = util.vector2(DETAIL_TEXT_WIDTH, DESCRIPTION_TEXT_HEIGHT),
                 },
-                external = {
-                    grow = 1,
-                }
             }
         },
-        external = {
-            grow = 1,
-        }
     }
 
     vFlexLayout.content:add(self:artLayout())
-    vFlexLayout.content:add(myui.padWidget(0, 4))
+    vFlexLayout.content:add(myui.padWidget(0, 2))
     vFlexLayout.content:add(requirementsHeader)
     vFlexLayout.content:add(self:requirementsLayout())
-    vFlexLayout.content:add(myui.padWidget(0, 4))
+    vFlexLayout.content:add(myui.padWidget(0, 2))
+    if paddedFlavourText ~= nil then
+        vFlexLayout.content:add(paddedFlavourText)
+        vFlexLayout.content:add(myui.padWidget(0, 2))
+    end
     vFlexLayout.content:add(nameHeader)
     vFlexLayout.content:add(paddedDetailText)
 

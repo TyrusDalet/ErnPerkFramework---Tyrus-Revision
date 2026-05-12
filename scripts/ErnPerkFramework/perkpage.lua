@@ -32,6 +32,12 @@ local core = require("openmw.core")
 local localization = core.l10n(MOD_NAME)
 
 local DEBOUNCE_FRAMES = 5
+local TAB_BAR_WIDTH = 700
+local TAB_BUTTON_WIDTH = 90
+local TAB_NAV_BUTTON_WIDTH = 28
+local TAB_GAP = 4
+local MAX_VISIBLE_TABS = 6
+local DESCRIPTION_PAGE_SIZE = 520
 
 -- A content list can contain both Elements and Layouts.
 -- Elements are what you get when you call ui.create().
@@ -67,8 +73,24 @@ local remainingPointsElement = ui.create {
     template = interfaces.MWUI.templates.textNormal,
     type = ui.TYPE.Text,
     props = {
-        textAlignH = ui.ALIGNMENT.Start,
-        textAlignV = ui.ALIGNMENT.Center,
+        textAlignH   = ui.ALIGNMENT.Center,
+        textAlignV   = ui.ALIGNMENT.Center,
+        -- relativeSize(1,0): inherit full width from parent so centering
+        -- works correctly and the element doesn't push the flex out of shape.
+        relativeSize = util.vector2(1, 0),
+        text = "",
+    },
+}
+
+-- Cost display for the currently selected perk, shown below the
+-- remaining-points line and above the buttons.
+local perkPointCostElement = ui.create {
+    template = interfaces.MWUI.templates.textNormal,
+    type = ui.TYPE.Text,
+    props = {
+        textAlignH   = ui.ALIGNMENT.Center,
+        textAlignV   = ui.ALIGNMENT.Center,
+        relativeSize = util.vector2(1, 0),
         text = "",
     },
 }
@@ -87,6 +109,7 @@ local remainingPointsElement = ui.create {
 
 local TAB_ALL = "All"
 local activeTabType  = TAB_ALL
+local tabPageIndex = 1
 -- expandedGroups is a set (map of groupName -> true) rather than a single
 -- string, so multiple dropdowns can be open simultaneously.
 local expandedGroups = {}
@@ -102,6 +125,8 @@ local expandedGroups = {}
 -- ============================================================
 
 local justPickedPerks = {}
+local descriptionPagesByPerkID = {}
+local activeDescriptionPageByPerkID = {}
 
 -- ============================================================
 --  CATEGORY HELPERS
@@ -156,6 +181,25 @@ local function getTabNames(tree)
     end
     table.insert(names, TAB_ALL)
     return names
+end
+
+local function clampTabPage(tabCount)
+    local maxPage = math.max(1, tabCount - MAX_VISIBLE_TABS + 1)
+    tabPageIndex = math.max(1, math.min(tabPageIndex, maxPage))
+end
+
+local function keepActiveTabVisible(tabNames)
+    for i, tabName in ipairs(tabNames) do
+        if tabName == activeTabType then
+            if i < tabPageIndex then
+                tabPageIndex = i
+            elseif i > tabPageIndex + MAX_VISIBLE_TABS - 1 then
+                tabPageIndex = i - MAX_VISIBLE_TABS + 1
+            end
+            break
+        end
+    end
+    clampTabPage(#tabNames)
 end
 
 -- ============================================================
@@ -295,6 +339,58 @@ local function getSelectedPerk()
     return interfaces.ErnPerkFramework.getPerks()[entry.id]
 end
 
+local function paginateDescription(text)
+    local pages = {}
+    text = tostring(text or "")
+
+    while #text > DESCRIPTION_PAGE_SIZE do
+        local splitAt = DESCRIPTION_PAGE_SIZE
+        local paragraphBreak = text:sub(1, DESCRIPTION_PAGE_SIZE):match("^.*()\n\n")
+        if paragraphBreak and paragraphBreak > 1 then
+            splitAt = paragraphBreak
+        else
+            local whitespace = text:sub(1, DESCRIPTION_PAGE_SIZE):match("^.*()%s+")
+            if whitespace and whitespace > DESCRIPTION_PAGE_SIZE * 0.6 then
+                splitAt = whitespace
+            end
+        end
+
+        table.insert(pages, text:sub(1, splitAt):gsub("%s+$", ""))
+        text = text:sub(splitAt + 1):gsub("^%s+", "")
+    end
+
+    table.insert(pages, text)
+    return pages
+end
+
+local function getDescriptionPages(perk)
+    local perkID = perk:id()
+    if descriptionPagesByPerkID[perkID] == nil then
+        descriptionPagesByPerkID[perkID] = paginateDescription(perk:description())
+    end
+    return descriptionPagesByPerkID[perkID]
+end
+
+local function getCurrentDescriptionPage(perk)
+    local pages = getDescriptionPages(perk)
+    local perkID = perk:id()
+    local page = activeDescriptionPageByPerkID[perkID] or 1
+    page = math.max(1, math.min(page, #pages))
+    activeDescriptionPageByPerkID[perkID] = page
+    return page, pages
+end
+
+local function selectedDescriptionText()
+    local selectedPerk = getSelectedPerk()
+    if selectedPerk == nil then return nil end
+    local page, pages = getCurrentDescriptionPage(selectedPerk)
+    local text = pages[page]
+    if #pages > 1 then
+        text = text .. "\n\n(" .. tostring(page) .. "/" .. tostring(#pages) .. ")"
+    end
+    return text
+end
+
 local function hasPerk(idx)
     local entry = currentListEntries[idx]
     if not entry or entry.kind ~= "perk" then return false end
@@ -391,7 +487,46 @@ local tabBarElement = ui.create {
 -- availability without rebuilding it a second time.
 local function buildTabBar(tabNames, tree)
     local content = ui.content {}
-    for _, tabName in ipairs(tabNames) do
+
+    keepActiveTabVisible(tabNames)
+
+    local tabCount = #tabNames
+    local hasOverflow = tabCount > MAX_VISIBLE_TABS
+
+    local function addTabPageButton(label, enabled, delta)
+        local btn = ui.create {}
+        local color = enabled and 'normal' or 'disabled'
+        local clickFn = function() end
+        if enabled then
+            clickFn = function()
+                tabPageIndex = tabPageIndex + delta
+                clampTabPage(tabCount)
+                pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
+            end
+        end
+        btn.layout = myui.createTextButtonBorderless(
+            btn,
+            label,
+            color,
+            'tabPage_' .. label,
+            {},
+            util.vector2(TAB_NAV_BUTTON_WIDTH, 17),
+            clickFn,
+            {})
+        btn:update()
+        content:add(btn)
+        content:add(myui.padWidget(TAB_GAP, 0))
+    end
+
+    if hasOverflow then
+        addTabPageButton("<", tabPageIndex > 1, -1)
+    end
+
+    local firstTab = hasOverflow and tabPageIndex or 1
+    local lastTab = hasOverflow and math.min(tabCount, firstTab + MAX_VISIBLE_TABS - 1) or tabCount
+
+    for i = firstTab, lastTab do
+        local tabName = tabNames[i]
         local isActive    = (tabName == activeTabType)
         local hasAvail    = tabHasAvailablePerk(tree, tabName)
 
@@ -430,12 +565,16 @@ local function buildTabBar(tabNames, tree)
             color,
             'tab_' .. capturedTab,
             {},
-            util.vector2(0, 17),   -- width 0 = auto-size to text
+            util.vector2(TAB_BUTTON_WIDTH, 17),
             clickFn,
             {})
         btn:update()
         content:add(btn)
-        content:add(myui.padWidget(4, 0))
+        content:add(myui.padWidget(TAB_GAP, 0))
+    end
+
+    if hasOverflow then
+        addTabPageButton(">", lastTab < tabCount, 1)
     end
 
     tabBarElement.layout = {
@@ -443,6 +582,8 @@ local function buildTabBar(tabNames, tree)
         props = {
             horizontal   = true,
             relativeSize = util.vector2(1, 0),
+            autoSize     = false,
+            size         = util.vector2(TAB_BAR_WIDTH, 20),
         },
         content = content,
     }
@@ -485,7 +626,7 @@ local function viewPerk(perkID, idx)
     -- Update the detail panel and "have this perk" notice directly — these
     -- are safe to call from inside a UI callback because they are separate
     -- elements not currently being rendered.
-    perkDetailElement.layout = foundPerk:detailLayout()
+    perkDetailElement.layout = foundPerk:detailLayout(selectedDescriptionText())
     perkDetailElement:update()
 
     haveThisPerk.layout.props.visible = hasPerk(getSelectedIndex())
@@ -640,34 +781,71 @@ end
 -- ============================================================
 --  BUTTON ELEMENTS
 --
---  Pick button:   "Cost: X  Acquire" (greyed when unavailable)
---  Cancel button: "Exit"
+--  Pick button:        "Acquire"  (greyed when unavailable)
+--  Cancel button:      "Exit"
+--  remainingPointsElement: "X Perk Points Remaining"
+--  perkPointCostElement:   "Cost: X" (blank when no perk selected)
 --
---  remainingPointsElement is also refreshed here since it
---  belongs logically to the same "what can I do" area.
+--  Both text elements and the pick button are refreshed together
+--  in updatePickButtonElement().
 -- ============================================================
 
 local pickButtonElement = ui.create {}
+local previousDescriptionButtonElement = ui.create {}
+local nextDescriptionButtonElement = ui.create {}
+
+local function changeDescriptionPage(delta)
+    local selectedPerk = getSelectedPerk()
+    if selectedPerk == nil then return end
+    local page, pages = getCurrentDescriptionPage(selectedPerk)
+    activeDescriptionPageByPerkID[selectedPerk:id()] = math.max(1, math.min(page + delta, #pages))
+    pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
+end
+
+local function updateDescriptionPageButtons()
+    local selectedPerk = getSelectedPerk()
+    local page = 1
+    local pageCount = 1
+    if selectedPerk ~= nil then
+        local pages
+        page, pages = getCurrentDescriptionPage(selectedPerk)
+        pageCount = #pages
+    end
+
+    previousDescriptionButtonElement.layout = myui.createTextButton(
+        previousDescriptionButtonElement,
+        "Prev",
+        page > 1 and 'normal' or 'disabled',
+        'previousDescriptionButton',
+        {},
+        util.vector2(68, 17),
+        function() changeDescriptionPage(-1) end)
+    previousDescriptionButtonElement:update()
+
+    nextDescriptionButtonElement.layout = myui.createTextButton(
+        nextDescriptionButtonElement,
+        "Next",
+        page < pageCount and 'normal' or 'disabled',
+        'nextDescriptionButton',
+        {},
+        util.vector2(68, 17),
+        function() changeDescriptionPage(1) end)
+    nextDescriptionButtonElement:update()
+end
 
 local function updatePickButtonElement()
-    local color = 'normal'
+    local color        = 'normal'
     local selectedPerk = getSelectedPerk()
-    local btnText
-
-    if selectedPerk ~= nil then
-        local cost = selectedPerk:cost()
-        btnText = "Cost: " .. tostring(cost) .. "  Acquire"
-    else
-        btnText = "Acquire"
-    end
 
     if not perkAvailable(selectedPerk) then
         color = 'disabled'
     end
 
+    -- Button always reads "Acquire" — the cost is shown separately below
+    -- the remaining-points line so the button stays a fixed, clean width.
     pickButtonElement.layout = myui.createTextButton(
         pickButtonElement,
-        btnText,
+        "Acquire",
         color,
         'pickButton',
         {},
@@ -675,12 +853,23 @@ local function updatePickButtonElement()
         doPick)
     pickButtonElement:update()
 
-    -- Update the remaining perk points display
+    -- Update the remaining perk points line
     local pts    = remainingPoints
     local plural = pts == 1 and "" or "s"
     remainingPointsElement.layout.props.text =
         tostring(pts) .. " Perk Point" .. plural .. " Remaining"
     remainingPointsElement:update()
+
+    -- Update the cost line: show "Cost: X" when a perk is selected,
+    -- blank otherwise so the layout doesn't show stale information.
+    if selectedPerk ~= nil then
+        perkPointCostElement.layout.props.text = "Cost: " .. tostring(selectedPerk:cost())
+    else
+        perkPointCostElement.layout.props.text = ""
+    end
+    perkPointCostElement:update()
+
+    updateDescriptionPageButtons()
 end
 updatePickButtonElement()
 
@@ -743,9 +932,10 @@ end
 --                perkDetailElement  (natural height)
 --                haveThisPerk
 --                grow spacer        (pushes bottom section down)
---                remainingPointsElement
+--                remainingPointsElement   ("X Perk Points Remaining")
+--                perkPointCostElement     ("Cost: X" or blank)
 --                pad
---                buttons row
+--                buttons row (centred)    Acquire | Exit
 --                pad
 --
 --  Using arrange=Start and a grow spacer ensures the buttons
@@ -789,51 +979,78 @@ local function menuLayout()
                                 props = {
                                     horizontal = true,
                                     autoSize   = false,
-                                    size       = util.vector2(700, 480),
+                                    size       = util.vector2(700, 430),
                                 },
                                 external = { grow = 1 },
                                 content  = ui.content {
                                     -- Left: perk list
                                     perkList.root,
                                     myui.padWidget(8, 0),
-                                    -- Right: detail panel, buttons anchored to bottom
+                                    -- Right: two-section vertical layout.
+                                    -- Top section (grow=1): detail content fills
+                                    -- whatever space is left after the footer.
+                                    -- Bottom section (no grow): fixed-height footer
+                                    -- always visible at the bottom of the panel.
                                     {
                                         type  = ui.TYPE.Flex,
                                         props = {
-                                            -- arrange=Start so children stack from top;
-                                            -- the grow spacer below pushes the button
-                                            -- row to the very bottom of this panel.
                                             arrange      = ui.ALIGNMENT.Start,
                                             horizontal   = false,
                                             relativeSize = util.vector2(1, 1),
                                         },
                                         external = { grow = 1 },
                                         content  = ui.content {
-                                            -- Perk detail + "you have this" notice
-                                            perkDetailElement,
-                                            myui.padWidget(0, 4),
-                                            haveThisPerk,
-                                            -- Grow spacer: absorbs all remaining
-                                            -- vertical space, pinning everything
-                                            -- below it to the bottom of the panel.
+                                            -- TOP: perk detail + "you have this" notice.
                                             {
-                                                type     = ui.TYPE.Widget,
-                                                props    = {},
+                                                type  = ui.TYPE.Flex,
+                                                props = {
+                                                    arrange      = ui.ALIGNMENT.Start,
+                                                    horizontal   = false,
+                                                    relativeSize = util.vector2(1, 0),
+                                                },
                                                 external = { grow = 1 },
-                                            },
-                                            -- Remaining points + action buttons
-                                            remainingPointsElement,
-                                            myui.padWidget(0, 6),
-                                            {
-                                                type    = ui.TYPE.Flex,
-                                                props   = { horizontal = true },
-                                                content = ui.content {
-                                                    pickButtonElement,
-                                                    myui.padWidget(8, 0),
-                                                    cancelButtonElement,
+                                                content  = ui.content {
+                                                    -- perkDetailElement uses relativeSize(1,1)
+                                                    -- in its internal layout (detailLayout),
+                                                    -- so it fills this container fully, giving
+                                                    -- its text children a concrete pixel width
+                                                    -- for word-wrap.
+                                                    perkDetailElement,
+                                                    myui.padWidget(0, 4),
+                                                    haveThisPerk,
                                                 },
                                             },
-                                            myui.padWidget(0, 8),
+                                            -- BOTTOM: remaining points, cost, buttons.
+                                            -- No grow: sizes to its natural content height
+                                            -- and is always fully visible.
+                                            {
+                                                type  = ui.TYPE.Flex,
+                                                props = {
+                                                    arrange      = ui.ALIGNMENT.Start,
+                                                    horizontal   = false,
+                                                    relativeSize = util.vector2(1, 0),
+                                                },
+                                                content = ui.content {
+                                                    remainingPointsElement,
+                                                    myui.padWidget(0, 2),
+                                                    perkPointCostElement,
+                                                    myui.padWidget(0, 6),
+                                                    {
+                                                        type    = ui.TYPE.Flex,
+                                                        props   = { horizontal = true },
+                                                        content = ui.content {
+                                                            previousDescriptionButtonElement,
+                                                            myui.padWidget(8, 0),
+                                                            nextDescriptionButtonElement,
+                                                            myui.padWidget(8, 0),
+                                                            pickButtonElement,
+                                                            myui.padWidget(8, 0),
+                                                            cancelButtonElement,
+                                                        },
+                                                    },
+                                                    myui.padWidget(0, 8),
+                                                },
+                                            },
                                         },
                                     },
                                 },
@@ -869,7 +1086,7 @@ local function redraw()
     -- Update detail panel for the current selection
     local selectedPerk = getSelectedPerk()
     if selectedPerk ~= nil then
-        perkDetailElement.layout = selectedPerk:detailLayout()
+        perkDetailElement.layout = selectedPerk:detailLayout(selectedDescriptionText())
         perkDetailElement:update()
         haveThisPerk.layout.props.visible = hasPerk(getSelectedIndex())
         haveThisPerk:update()
@@ -898,10 +1115,14 @@ end
 local debounce = 0
 
 local function showPerkUI(data)
+    data = data or {}
+
     -- Prevent input for 5 frames to stop accidental Enter from console.
     debounce = DEBOUNCE_FRAMES
     satisfiedCache  = {}
     justPickedPerks = {}  -- clear pick tracking for the new session
+    descriptionPagesByPerkID = {}
+    activeDescriptionPageByPerkID = {}
 
     remainingPoints = interfaces.ErnPerkFramework.totalAllowedPoints() -
         interfaces.ErnPerkFramework.currentSpentPoints()
@@ -918,6 +1139,9 @@ local function showPerkUI(data)
             idListString = idListString .. ", " .. tostring(v)
         end
         log(nil, "Showing explicit subset of perks: " .. idListString)
+        activeTabType = TAB_ALL
+        tabPageIndex = 1
+        expandedGroups = {}
     else
         visiblePerks = nil
     end
@@ -948,7 +1172,10 @@ local function showPerkUI(data)
         -- unfiltered view.
         local tree     = buildCategoryTree()
         local tabNames = getTabNames(tree)
-        activeTabType  = tabNames[1]
+        if visiblePerks == nil then
+            activeTabType = tabNames[1]
+        end
+        keepActiveTabVisible(tabNames)
         expandedGroups = {}
 
         interfaces.UI.setMode('Interface', { windows = {} })

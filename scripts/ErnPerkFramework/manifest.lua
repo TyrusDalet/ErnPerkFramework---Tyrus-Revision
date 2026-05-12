@@ -72,6 +72,8 @@ end
 ---@field onRemove fun(perk: table)                  -- Called when the perk is removed
 ---@field localizedName? string|fun():string         -- Display name or function returning it
 ---@field localizedDescription? string|fun():string  -- Description or function returning it
+---@field localizedFlavour? string|fun():string      -- Muted flavour text shown above the description
+---@field localizedFlavor? string|fun():string       -- Alias for localizedFlavour
 ---@field art? string|fun():string                   -- Texture path or function returning it
 ---@field hidden? boolean|fun():boolean              -- Whether perk is hidden
 ---@field cost? number|fun():number                  -- Cost of the perk
@@ -83,7 +85,7 @@ end
 
 --- Registers a new perk into the framework.
 --- Perks must have `id`, `requirements` (table), `onAdd` (function), and `onRemove` (function).
---- Optional fields: `localizedName`, `localizedDescription`, `art`, `hidden`, `cost`.
+--- Optional fields: `localizedName`, `localizedDescription`, `localizedFlavour`, `art`, `hidden`, `cost`.
 --- If a perk with the same ID already exists, it is replaced.
 --- @param data PerkData The perk record data to register.
 --- @return boolean True upon successful registration.
@@ -123,6 +125,26 @@ local function registerPerk(data)
                 "registerPerk(" ..
                 tostring(data.id) ..
                 ") perk data has a 'localizedDescription' field, which must be a string or a function that returns a string.",
+                2)
+            return false
+        end
+    end
+    if (data.localizedFlavour ~= nil) then
+        if (type(data.localizedFlavour) ~= "function") and (type(data.localizedFlavour) ~= "string") then
+            error(
+                "registerPerk(" ..
+                tostring(data.id) ..
+                ") perk data has a 'localizedFlavour' field, which must be a string or a function that returns a string.",
+                2)
+            return false
+        end
+    end
+    if (data.localizedFlavor ~= nil) then
+        if (type(data.localizedFlavor) ~= "function") and (type(data.localizedFlavor) ~= "string") then
+            error(
+                "registerPerk(" ..
+                tostring(data.id) ..
+                ") perk data has a 'localizedFlavor' field, which must be a string or a function that returns a string.",
                 2)
             return false
         end

@@ -131,6 +131,10 @@ local function addPerk(data)
         error("addPerk(" .. tostring(data.perkID) .. ") called with bad perkID.")
         return
     end
+    if hasPerk(data.perkID) then
+        log(nil, "Perk " .. tostring(data.perkID) .. " is already active. Can't add it twice.")
+        return
+    end
     if foundPerk:evaluateRequirements().satisfied then
         local totalAllowed = interfaces.ErnPerkFramework.totalAllowedPoints()
         if interfaces.ErnPerkFramework.currentSpentPoints() + foundPerk:cost() <= totalAllowed then
@@ -166,7 +170,7 @@ local function removePerk(data)
             break
         end
     end
-    interfaces.ErnPerkFramework.setPlayerPerks(activePerksByID)
+    interfaces.ErnPerkFramework._setPlayerPerks(activePerksByID)
     foundPerk:onRemove()
 end
 
