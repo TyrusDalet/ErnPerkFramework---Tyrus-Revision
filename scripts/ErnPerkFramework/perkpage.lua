@@ -37,6 +37,10 @@ local TAB_BUTTON_WIDTH = 90
 local TAB_NAV_BUTTON_WIDTH = 28
 local TAB_GAP = 4
 local MAX_VISIBLE_TABS = 6
+
+-- Maximum characters per description page before automatic pagination kicks in.
+-- You can also force a page break at any point by inserting a form-feed
+-- character (\f) directly in the localizedDescription string.
 local DESCRIPTION_PAGE_SIZE = 520
 
 -- A content list can contain both Elements and Layouts.
@@ -114,6 +118,11 @@ local tabPageIndex = 1
 -- string, so multiple dropdowns can be open simultaneously.
 local expandedGroups = {}
 
+-- Cached tab names from the last redraw().
+-- Used by onFrame() to support keyboard/controller tab navigation without
+-- needing to rebuild the category tree every frame.
+local cachedTabNames = {}
+
 -- ============================================================
 --  IMMEDIATE PICK TRACKING
 --
@@ -125,6 +134,26 @@ local expandedGroups = {}
 -- ============================================================
 
 local justPickedPerks = {}
+
+-- ============================================================
+--  DESCRIPTION PAGINATION STATE
+--
+--  descriptionPagesByPerkID  - cache of paginated page arrays, keyed by perk ID.
+--                              Built lazily the first time a perk is viewed.
+--  activeDescriptionPageByPerkID - the page number the player is currently
+--                              viewing for each perk, keyed by perk ID.
+--                              Persists for the duration of the UI session.
+--
+--  Pagination rules (see paginateDescription below):
+--   1. If the description contains any \f (form-feed) characters, those are
+--      treated as explicit page breaks and the string is split at those points.
+--      This gives perk authors full control: one \f per effect creates one
+--      effect-per-page.
+--   2. Otherwise, the description is automatically paginated by character count
+--      (DESCRIPTION_PAGE_SIZE), preferring to break at paragraph or word
+--      boundaries.
+-- ============================================================
+
 local descriptionPagesByPerkID = {}
 local activeDescriptionPageByPerkID = {}
 
@@ -339,16 +368,85 @@ local function getSelectedPerk()
     return interfaces.ErnPerkFramework.getPerks()[entry.id]
 end
 
+-- ============================================================
+--  TEXT SANITIZATION
+--
+--  sanitizeText() strips control characters that are valid in Lua
+--  string literals but cause MyGUI's text renderer to hard-crash.
+--  It mirrors the same helper in perk.lua.
+--
+--  Applied to every page returned by paginateDescription() as a
+--  final safety net, even though correct use of \f page-breaks
+--  means no form-feed should reach a page string.
+-- ============================================================
+
+local function sanitizeText(text)
+    if type(text) ~= "string" then
+        text = tostring(text or "")
+    end
+    -- Strip form-feed characters (page-break sentinels).
+    -- NOTE: string.gsub returns (result, count). The outer parentheses
+    -- discard the count so callers always receive exactly one value.
+    -- Without this, table.insert(pages, sanitizeText(x)) expands to
+    -- table.insert(pages, str, count) which errors: "number expected".
+    return (text:gsub("\f", ""))
+end
+
+-- ============================================================
+--  DESCRIPTION PAGINATION
+--
+--  paginateDescription(text) -> list of page strings
+--
+--  Two modes:
+--   a) Explicit \f breaks: if the description contains any \f characters,
+--      those are the page boundaries.  This gives full authorial control —
+--      e.g. put \f between each effect description for one effect per page.
+--   b) Automatic: splits at the nearest paragraph or word boundary before
+--      DESCRIPTION_PAGE_SIZE characters.
+--
+--  sanitizeText() is called on every page before it is returned, so even
+--  if a \f somehow survives into a page string, it is stripped before it
+--  can reach a MyGUI text widget and crash the game.
+--
+--  getDescriptionPages / getCurrentDescriptionPage retrieve the cached
+--  pages and the player's current page index for a given perk.
+-- ============================================================
+
 local function paginateDescription(text)
-    local pages = {}
     text = tostring(text or "")
 
+    -- Mode (a): explicit \f page breaks
+    -- If any form-feed characters exist, use them as the sole split points.
+    if text:find("\f") then
+        local pages = {}
+        for page in (text .. "\f"):gmatch("(.-)\f") do
+            local trimmed = page:gsub("^%s+", ""):gsub("%s+$", "")
+            if trimmed ~= "" then
+                -- sanitizeText() is a last-resort safety net: each page
+                -- should be clean after splitting on \f, but strip any
+                -- that survived (e.g. the \n+spaces+\f pattern the author
+                -- used in the hasTamrielData conditional block).
+                table.insert(pages, sanitizeText(trimmed))
+            end
+        end
+        if #pages > 0 then
+            return pages
+        end
+        -- Fall through if every segment was whitespace-only
+    end
+
+    -- Mode (b): automatic pagination by character count.
+    -- Strip any stray \f characters first so they don't reach a widget.
+    text = sanitizeText(text)
+    local pages = {}
     while #text > DESCRIPTION_PAGE_SIZE do
         local splitAt = DESCRIPTION_PAGE_SIZE
+        -- Prefer splitting at a paragraph break (\n\n) within the window
         local paragraphBreak = text:sub(1, DESCRIPTION_PAGE_SIZE):match("^.*()\n\n")
         if paragraphBreak and paragraphBreak > 1 then
             splitAt = paragraphBreak
         else
+            -- Fall back to nearest whitespace
             local whitespace = text:sub(1, DESCRIPTION_PAGE_SIZE):match("^.*()%s+")
             if whitespace and whitespace > DESCRIPTION_PAGE_SIZE * 0.6 then
                 splitAt = whitespace
@@ -380,6 +478,9 @@ local function getCurrentDescriptionPage(perk)
     return page, pages
 end
 
+-- Returns the text for the currently-visible description page of the
+-- selected perk, with a "(page/total)" suffix appended only when
+-- there are multiple pages.  Returns nil when nothing is selected.
 local function selectedDescriptionText()
     local selectedPerk = getSelectedPerk()
     if selectedPerk == nil then return nil end
@@ -744,7 +845,7 @@ end
 --  PICK PERK
 --
 --  doPick() is a standalone function called from both the
---  pick button and the keyboard Enter handler.
+--  pick button and the keyboard Enter / controller A handler.
 --
 --  After the perk is added we immediately record it in
 --  justPickedPerks and call redraw() so the list greys out
@@ -779,20 +880,69 @@ local function doPick()
 end
 
 -- ============================================================
---  BUTTON ELEMENTS
+--  TAB NAVIGATION (keyboard / controller)
 --
---  Pick button:        "Acquire"  (greyed when unavailable)
---  Cancel button:      "Exit"
---  remainingPointsElement: "X Perk Points Remaining"
---  perkPointCostElement:   "Cost: X" (blank when no perk selected)
---
---  Both text elements and the pick button are refreshed together
---  in updatePickButtonElement().
+--  navigateTab(delta) moves the active tab by delta (+1 = right, -1 = left),
+--  wrapping around at the ends.  It uses cachedTabNames so no tree rebuild
+--  is needed per-frame.  Only tabs with available perks (or TAB_ALL) are
+--  considered, matching the clickable-tab logic in buildTabBar.
 -- ============================================================
 
-local pickButtonElement = ui.create {}
-local previousDescriptionButtonElement = ui.create {}
-local nextDescriptionButtonElement = ui.create {}
+local function navigateTab(delta)
+    if #cachedTabNames == 0 then return end
+
+    -- Find the index of the currently active tab
+    local currentIdx = 1
+    for i, name in ipairs(cachedTabNames) do
+        if name == activeTabType then
+            currentIdx = i
+            break
+        end
+    end
+
+    -- Walk in the requested direction, wrapping, skipping tabs that have
+    -- no available perks (unless they are TAB_ALL, which is always reachable)
+    local count = #cachedTabNames
+    for _ = 1, count do
+        currentIdx = ((currentIdx - 1 + delta) % count) + 1
+        local candidate = cachedTabNames[currentIdx]
+        if candidate == TAB_ALL or tabHasAvailablePerk(cachedTree, candidate) then
+            activeTabType  = candidate
+            expandedGroups = {}
+            if perkList then perkList.selectedIndex = 1 end
+            pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
+            return
+        end
+    end
+end
+
+-- ============================================================
+--  DROPDOWN TOGGLE (keyboard / controller)
+--
+--  toggleSelectedDropdown() expands or collapses the group
+--  header row that is currently selected in the perk list.
+--  Has no effect when the selection is on a perk row.
+-- ============================================================
+
+local function toggleSelectedDropdown()
+    local entry = currentListEntries[getSelectedIndex()]
+    if not entry or entry.kind ~= "header" then return end
+    if expandedGroups[entry.group] then
+        expandedGroups[entry.group] = nil
+    else
+        expandedGroups[entry.group] = true
+    end
+    pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
+end
+
+-- ============================================================
+--  DESCRIPTION PAGE NAVIGATION
+--
+--  changeDescriptionPage(delta) advances or retreats the visible
+--  page for the currently selected perk, clamped to [1, pageCount].
+--  Called by the Prev/Next buttons, keyboard < > keys, and
+--  controller shoulder buttons (LB / RB).
+-- ============================================================
 
 local function changeDescriptionPage(delta)
     local selectedPerk = getSelectedPerk()
@@ -801,6 +951,51 @@ local function changeDescriptionPage(delta)
     activeDescriptionPageByPerkID[selectedPerk:id()] = math.max(1, math.min(page + delta, #pages))
     pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
 end
+
+-- ============================================================
+--  BUTTON ELEMENTS
+--
+--  Pick button:             "Acquire"  (greyed when unavailable)
+--  Cancel button:           "Exit"
+--  remainingPointsElement:  "X Perk Points Remaining"
+--  perkPointCostElement:    "Cost: X" (blank when no perk selected)
+--
+--  descriptionNavElement:   A self-contained Flex row containing Prev
+--                           and Next page buttons.  It is HIDDEN (empty
+--                           content) when the selected perk has only one
+--                           page of description, and shown otherwise.
+--                           This lives on its own row above Acquire/Exit.
+--
+--  All text elements and the pick button are refreshed together in
+--  updatePickButtonElement().  The description nav is refreshed
+--  separately in updateDescriptionPageButtons().
+-- ============================================================
+
+local pickButtonElement = ui.create {}
+local cancelButtonElement = ui.create {}
+local previousDescriptionButtonElement = ui.create {}
+local nextDescriptionButtonElement = ui.create {}
+
+-- Container for the Prev/Next description page buttons.
+-- Its content is set to empty when pageCount <= 1, causing it to
+-- collapse to zero height so it does not take up space in the layout.
+local descriptionNavElement = ui.create {
+    type  = ui.TYPE.Flex,
+    props = { horizontal = true },
+    content = ui.content {}
+}
+
+-- ============================================================
+--  updateDescriptionPageButtons
+--
+--  Rebuilds and shows/hides the descriptionNavElement based on
+--  how many pages the currently selected perk has.
+--
+--  * 1 page  → element gets empty content (zero height, invisible)
+--  * > 1 page → element is populated with Prev and Next buttons
+--
+--  Also used to keep the controller/keyboard page-nav hints correct.
+-- ============================================================
 
 local function updateDescriptionPageButtons()
     local selectedPerk = getSelectedPerk()
@@ -812,6 +1007,18 @@ local function updateDescriptionPageButtons()
         pageCount = #pages
     end
 
+    if pageCount <= 1 then
+        -- Single page: hide the navigation row entirely so it takes no space
+        descriptionNavElement.layout = {
+            type    = ui.TYPE.Flex,
+            props   = { horizontal = true },
+            content = ui.content {}
+        }
+        descriptionNavElement:update()
+        return
+    end
+
+    -- Multiple pages: rebuild Prev/Next buttons with correct enabled state
     previousDescriptionButtonElement.layout = myui.createTextButton(
         previousDescriptionButtonElement,
         "Prev",
@@ -831,6 +1038,18 @@ local function updateDescriptionPageButtons()
         util.vector2(68, 17),
         function() changeDescriptionPage(1) end)
     nextDescriptionButtonElement:update()
+
+    -- Show the navigation row with both buttons
+    descriptionNavElement.layout = {
+        type    = ui.TYPE.Flex,
+        props   = { horizontal = true },
+        content = ui.content {
+            previousDescriptionButtonElement,
+            myui.padWidget(8, 0),
+            nextDescriptionButtonElement,
+        }
+    }
+    descriptionNavElement:update()
 end
 
 local function updatePickButtonElement()
@@ -869,11 +1088,10 @@ local function updatePickButtonElement()
     end
     perkPointCostElement:update()
 
+    -- Refresh description page navigation alongside the rest of the footer
     updateDescriptionPageButtons()
 end
-updatePickButtonElement()
 
-local cancelButtonElement = ui.create {}
 cancelButtonElement.layout = myui.createTextButton(
     cancelButtonElement,
     "Exit",
@@ -883,6 +1101,8 @@ cancelButtonElement.layout = myui.createTextButton(
     util.vector2(129, 17),
     function() pself:sendEvent(MOD_NAME .. "closePerkUI", {}) end)
 cancelButtonElement:update()
+
+updatePickButtonElement()
 
 -- ============================================================
 --  PERK LIST WIDGET
@@ -929,18 +1149,20 @@ end
 --    mainFlex (horizontal):
 --      [Left]  perkList
 --      [Right] Vertical detail flex (arrange=Start):
---                perkDetailElement  (natural height)
+--                perkDetailElement  (natural height, grows)
 --                haveThisPerk
 --                grow spacer        (pushes bottom section down)
 --                remainingPointsElement   ("X Perk Points Remaining")
 --                perkPointCostElement     ("Cost: X" or blank)
 --                pad
+--                descriptionNavElement    (Prev/Next, hidden when 1 page)
+--                pad
 --                buttons row (centred)    Acquire | Exit
 --                pad
 --
---  Using arrange=Start and a grow spacer ensures the buttons
---  are always anchored to the bottom of the panel regardless
---  of how much detail content is present.
+--  Separating descriptionNavElement from the Acquire/Exit row means the
+--  page buttons don't interfere visually with the action buttons, and
+--  the row simply collapses when there is only one page.
 -- ============================================================
 
 local function menuLayout()
@@ -1020,7 +1242,7 @@ local function menuLayout()
                                                     haveThisPerk,
                                                 },
                                             },
-                                            -- BOTTOM: remaining points, cost, buttons.
+                                            -- BOTTOM: remaining points, cost, page nav, buttons.
                                             -- No grow: sizes to its natural content height
                                             -- and is always fully visible.
                                             {
@@ -1034,15 +1256,17 @@ local function menuLayout()
                                                     remainingPointsElement,
                                                     myui.padWidget(0, 2),
                                                     perkPointCostElement,
-                                                    myui.padWidget(0, 6),
+                                                    myui.padWidget(0, 4),
+                                                    -- Description page navigation row.
+                                                    -- Populated only when pageCount > 1;
+                                                    -- collapses to zero height otherwise.
+                                                    descriptionNavElement,
+                                                    myui.padWidget(0, 4),
+                                                    -- Primary action buttons (always visible)
                                                     {
                                                         type    = ui.TYPE.Flex,
                                                         props   = { horizontal = true },
                                                         content = ui.content {
-                                                            previousDescriptionButtonElement,
-                                                            myui.padWidget(8, 0),
-                                                            nextDescriptionButtonElement,
-                                                            myui.padWidget(8, 0),
                                                             pickButtonElement,
                                                             myui.padWidget(8, 0),
                                                             cancelButtonElement,
@@ -1072,6 +1296,10 @@ local function redraw()
     -- the list renderer (via cachedTree), and the availability helpers.
     cachedTree = buildCategoryTree()
     local tabNames = getTabNames(cachedTree)
+
+    -- Cache tab names at module scope so onFrame() can use them for
+    -- keyboard/controller tab navigation without rebuilding the tree.
+    cachedTabNames = tabNames
 
     -- Rebuild entry list for current tab/group state
     buildListEntries()
@@ -1196,18 +1424,46 @@ end
 
 local function onMouseWheel(direction)
     if menu == nil then return end
+    -- direction < 0 = wheel scrolled down → move cursor DOWN the list (index increases)
+    -- direction > 0 = wheel scrolled up   → move cursor UP the list   (index decreases)
+    -- list.scroll(step) does selectedIndex -= step, so negative step = index increase.
     if direction < 0 then
-        perkList:scroll(1)
-    else
         perkList:scroll(-1)
+    else
+        perkList:scroll(1)
     end
     redraw()
 end
 
+-- ---------------------------------------------------------------
+-- Key-held status flags.
+-- "Status" variables track whether the key was pressed last frame
+-- so we can fire on press (with repeat debounce) or on release
+-- (for actions that should fire once, like picking a perk).
+-- ---------------------------------------------------------------
+
+-- Perk list vertical navigation (UpArrow / DownArrow, DPad Up/Down)
 local keyEnterStatus  = false
 local keyEscapeStatus = false
 local keyDownStatus   = false
 local keyUpStatus     = false
+
+-- Tab navigation (LeftArrow / RightArrow, DPad Left/Right)
+-- Fires once on initial press, then again after LONG_DEBOUNCE frames if held.
+local keyTabLeftStatus  = false
+local keyTabRightStatus = false
+
+-- Dropdown expand/collapse (E key, X controller button)
+-- Fires on key RELEASE so a quick tap doesn't double-toggle.
+local keyDropdownStatus = false
+
+-- Description page navigation (Comma = prev, Period = next; LB / RB)
+-- Fires on key RELEASE for deliberate single-step paging.
+local keyDescPrevStatus = false
+local keyDescNextStatus = false
+
+-- How many extra frames to wait before accepting a held-key repeat
+local LONG_DEBOUNCE = 5 * DEBOUNCE_FRAMES
 
 local function onFrame(dt)
     if menu == nil then return end
@@ -1218,43 +1474,107 @@ local function onFrame(dt)
         return
     end
 
+    -- ---------------------------------------------------------------
+    -- List vertical navigation
+    -- DownArrow / DPad Down → move cursor DOWN (higher index)
+    -- UpArrow   / DPad Up   → move cursor UP   (lower index)
+    -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.DownArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadDown) then
-        perkList:scroll(1)
-        debounce = keyDownStatus and DEBOUNCE_FRAMES or 5 * DEBOUNCE_FRAMES
+        perkList:scroll(-1)  -- scroll(-1) increments selectedIndex → cursor moves DOWN
+        debounce = keyDownStatus and DEBOUNCE_FRAMES or LONG_DEBOUNCE
         keyDownStatus = true
         redraw()
     else
         keyDownStatus = false
     end
     if input.isKeyPressed(input.KEY.UpArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadUp) then
-        perkList:scroll(-1)
-        debounce = keyUpStatus and DEBOUNCE_FRAMES or 5 * DEBOUNCE_FRAMES
+        perkList:scroll(1)   -- scroll(1) decrements selectedIndex → cursor moves UP
+        debounce = keyUpStatus and DEBOUNCE_FRAMES or LONG_DEBOUNCE
         keyUpStatus = true
         redraw()
     else
         keyUpStatus = false
     end
 
-    -- Enter / A: pick perk or toggle header (trigger on key release)
+    -- ---------------------------------------------------------------
+    -- Tab navigation
+    -- LeftArrow / DPad Left  → previous tab
+    -- RightArrow / DPad Right → next tab
+    -- Fires once on initial press; held keys are debounced via LONG_DEBOUNCE.
+    -- ---------------------------------------------------------------
+    if input.isKeyPressed(input.KEY.LeftArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadLeft) then
+        if not keyTabLeftStatus then
+            navigateTab(-1)
+            debounce = LONG_DEBOUNCE
+        end
+        keyTabLeftStatus = true
+    else
+        keyTabLeftStatus = false
+    end
+
+    if input.isKeyPressed(input.KEY.RightArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadRight) then
+        if not keyTabRightStatus then
+            navigateTab(1)
+            debounce = LONG_DEBOUNCE
+        end
+        keyTabRightStatus = true
+    else
+        keyTabRightStatus = false
+    end
+
+    -- ---------------------------------------------------------------
+    -- Dropdown expand/collapse
+    -- E key / X controller button → toggle the selected header dropdown
+    -- Fires on RELEASE so a single tap produces exactly one toggle.
+    -- ---------------------------------------------------------------
+    if input.isKeyPressed(input.KEY.E) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.X) then
+        keyDropdownStatus = true
+    elseif keyDropdownStatus then
+        toggleSelectedDropdown()
+        keyDropdownStatus = false
+    end
+
+    -- ---------------------------------------------------------------
+    -- Description page navigation
+    -- Comma (,) key / Left Shoulder (LB) → previous page
+    -- Period (.) key / Right Shoulder (RB) → next page
+    -- Fires on RELEASE so each press advances exactly one page.
+    -- ---------------------------------------------------------------
+    if input.isKeyPressed(input.KEY.Comma) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.LeftShoulder) then
+        keyDescPrevStatus = true
+    elseif keyDescPrevStatus then
+        changeDescriptionPage(-1)
+        keyDescPrevStatus = false
+    end
+
+    if input.isKeyPressed(input.KEY.Period) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.RightShoulder) then
+        keyDescNextStatus = true
+    elseif keyDescNextStatus then
+        changeDescriptionPage(1)
+        keyDescNextStatus = false
+    end
+
+    -- ---------------------------------------------------------------
+    -- Acquire perk
+    -- Enter / A button → pick selected perk (fires on RELEASE)
+    -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.Enter) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.A) then
         keyEnterStatus = true
     elseif keyEnterStatus == true then
         local entry = currentListEntries[getSelectedIndex()]
         if entry and entry.kind == "header" then
-            -- Toggle expand/collapse for this group without affecting others
-            if expandedGroups[entry.group] then
-                expandedGroups[entry.group] = nil
-            else
-                expandedGroups[entry.group] = true
-            end
-            redraw()
+            -- Enter on a header row expands/collapses it instead of picking
+            toggleSelectedDropdown()
         else
             doPick()
         end
         keyEnterStatus = false
     end
 
-    -- Escape / B: close
+    -- ---------------------------------------------------------------
+    -- Exit
+    -- Escape / B button → close the UI (fires on RELEASE)
+    -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.Escape) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.B) then
         keyEscapeStatus = true
     elseif keyEscapeStatus then

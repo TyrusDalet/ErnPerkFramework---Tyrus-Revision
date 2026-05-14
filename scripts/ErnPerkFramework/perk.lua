@@ -27,11 +27,53 @@ local myui = require('scripts.ErnPerkFramework.pcp.myui')
 local PerkFunctions = {}
 PerkFunctions.__index = PerkFunctions
 
+-- ============================================================
+--  TEXT SANITIZATION
+--
+--  sanitizeText() must be called on EVERY string before it is
+--  assigned to a UI text widget.  It strips characters that are
+--  safe in Lua string literals but cause MyGUI's text renderer
+--  to hard-crash the game:
+--
+--   \f (form-feed, ASCII 12) - used as a page-break sentinel in
+--      description strings; paginateDescription() should already
+--      have split these out, but this is a defensive last resort.
+--
+--  Add any additional control characters here as they are found.
+-- ============================================================
+
+local function sanitizeText(text)
+    if type(text) ~= "string" then
+        text = tostring(text or "")
+    end
+    -- Strip form-feed characters (page-break sentinels that must
+    -- never reach a text widget).
+    -- NOTE: string.gsub returns (result, count). The outer parentheses
+    -- discard the count so callers always receive exactly one value.
+    -- Without this, table.insert(pages, sanitizeText(x)) expands to
+    -- table.insert(pages, str, count) which errors: "number expected".
+    return (text:gsub("\f", ""))
+end
+
 local DETAIL_TEXT_WIDTH = 500
-local REQUIREMENT_LINE_HEIGHT = 24
+
+-- Reduced from 24 to 16 to keep the requirements section compact.
+-- Multi-branch faction orGroup names can get long; the smaller height
+-- prevents the requirements block from dominating the panel.
+local REQUIREMENT_LINE_HEIGHT = 16
+
 local REQUIREMENT_CHARS_PER_LINE = 58
-local FLAVOUR_TEXT_HEIGHT = 48
+
+-- Height reserved for the optional flavour text block.
+-- Flavour text is short by convention (one or two sentences).
+local FLAVOUR_TEXT_HEIGHT = 36
+
+-- Height of the main description text area.
+-- Pagination (see perkpage.lua) splits descriptions longer than
+-- DESCRIPTION_PAGE_SIZE characters across multiple pages, so this
+-- fixed height is generally sufficient for a single page.
 local DESCRIPTION_TEXT_HEIGHT = 210
+
 local ART_SIZE = util.vector2(224, 112)
 
 --- Resolves a field that might be a literal value or a function that returns a value.
@@ -135,6 +177,12 @@ end
 
 --- Gets the localized description of the perk, falling back to a default string.
 --- If `localizedDescription` in the record is a function, it's called to get the description.
+---
+--- Pagination note: in perkpage.lua, long descriptions are automatically split
+--- into pages of ~DESCRIPTION_PAGE_SIZE characters.  You can also insert a form-feed
+--- character (\f) anywhere in the description string to force an explicit page break
+--- at that point, giving you full control over what appears on each page.
+---
 --- @param self table The perk object.
 --- @return string The perk's description.
 function PerkFunctions.description(self)
@@ -145,10 +193,16 @@ function PerkFunctions.description(self)
     return description
 end
 
---- Gets the localized flavour text of the perk, if any.
---- Supports both localizedFlavour and localizedFlavor spellings.
+--- Gets the optional flavour text of the perk.
+--- Flavour text is a short, lore-flavoured sentence displayed above the mechanical
+--- description.  It is purely cosmetic and entirely optional; perks that do not
+--- supply it simply omit that block from the detail panel with no ill effect.
+---
+--- Both "localizedFlavour" and "localizedFlavor" spellings are accepted.
+--- Returns nil when absent or empty, so callers can safely nil-check it.
+---
 --- @param self table The perk object.
---- @return string|nil The perk's flavour text.
+--- @return string|nil The perk's flavour text, or nil if none was provided.
 function PerkFunctions.flavour(self)
     local flavour = self.record.localizedFlavour
     if flavour == nil then
@@ -271,6 +325,8 @@ end
 --- Creates the UI layout for the perk's requirements list.
 --- Displays localized requirement names, colored red if unsatisfied.
 --- Hidden requirements that are not satisfied are displayed as a generic "hiddenRequirement" string.
+--- Requirements use a compact line height to prevent long orGroup faction names
+--- (e.g. multi-branch TR guilds) from dominating the panel.
 --- @param self table The perk object.
 --- @return table The OpenMW UI layout table for the requirements list.
 function PerkFunctions.requirementsLayout(self)
@@ -358,8 +414,23 @@ function PerkFunctions.requirementsLayout(self)
     return padded
 end
 
---- Creates the full detail UI layout for the perk, including art, requirements, name, and description.
+--- Creates the full detail UI layout for the perk.
+---
+--- Panel order (top to bottom):
+---   1. Art image
+---   2. "Requirements" header + requirements list
+---   3. Flavour text block  (OPTIONAL — omitted entirely when nil, so perks
+---      that do not define localizedFlavour/localizedFlavor are unaffected)
+---   4. Perk name header
+---   5. Description text   (may be paginated; descriptionText receives the
+---      current page's text from perkpage.lua's selectedDescriptionText())
+---
+--- Flavour text is rendered in a muted colour and wrapped in curly quotes to
+--- visually distinguish it from the mechanical description below.
+---
 --- @param self table The perk object.
+--- @param descriptionText string|nil The (possibly paginated) description to show,
+---   or nil to fall back to the full self:description() string.
 --- @return table The OpenMW UI layout table for the perk details panel.
 function PerkFunctions.detailLayout(self, descriptionText)
     local vFlexLayout = {
@@ -405,9 +476,22 @@ function PerkFunctions.detailLayout(self, descriptionText)
         },
     }
 
+    -- ----------------------------------------------------------------
+    -- FLAVOUR TEXT (optional)
+    -- Only constructed when localizedFlavour / localizedFlavor is set.
+    -- Rendered in a muted notify colour with plain ASCII double-quote
+    -- wrapping.  We deliberately avoid \u{...} Unicode escapes here:
+    -- multi-byte UTF-8 literals can crash MyGUI's text renderer on
+    -- some OpenMW builds.  Plain ASCII quotes are safe everywhere.
+    -- Perks without flavour text skip this block entirely; no empty
+    -- space is reserved.
+    -- ----------------------------------------------------------------
     local flavourText = self:flavour()
     local paddedFlavourText = nil
     if flavourText ~= nil then
+        -- Wrap in plain ASCII double-quotes for a lore-quote aesthetic.
+        -- sanitizeText() strips any control characters that would crash MyGUI.
+        local quotedFlavour = '"' .. sanitizeText(flavourText) .. '"'
         paddedFlavourText = {
             name = "flavourText",
             type = ui.TYPE.Flex,
@@ -427,8 +511,10 @@ function PerkFunctions.detailLayout(self, descriptionText)
                         wordWrap = true,
                         textAlignH = ui.ALIGNMENT.Start,
                         textAlignV = ui.ALIGNMENT.Start,
-                        textColor = myui.interactiveTextColors.disabled.default,
-                        text = flavourText,
+                        -- Muted notify colour gives a visually distinct
+                        -- "flavour" feel separate from the mechanical text.
+                        textColor = myui.textColors.notify,
+                        text = quotedFlavour,
                         size = util.vector2(DETAIL_TEXT_WIDTH, FLAVOUR_TEXT_HEIGHT),
                     },
                 }
@@ -436,6 +522,14 @@ function PerkFunctions.detailLayout(self, descriptionText)
         }
     end
 
+    -- ----------------------------------------------------------------
+    -- DESCRIPTION TEXT
+    -- descriptionText is supplied by perkpage.lua's selectedDescriptionText(),
+    -- which returns the correct page of a potentially paginated description.
+    -- Falls back to the full description string when called outside that context.
+    -- sanitizeText() is applied in BOTH paths: the caller should never pass
+    -- raw \f characters, but this is a hard guarantee against MyGUI crashes.
+    -- ----------------------------------------------------------------
     local paddedDetailText = {
         name = "vflex",
         type = ui.TYPE.Flex,
@@ -456,7 +550,7 @@ function PerkFunctions.detailLayout(self, descriptionText)
                     wordWrap = true,
                     textAlignH = ui.ALIGNMENT.Start,
                     textAlignV = ui.ALIGNMENT.Start,
-                    text = descriptionText or self:description(),
+                    text = sanitizeText(descriptionText or self:description()),
                     size = util.vector2(DETAIL_TEXT_WIDTH, DESCRIPTION_TEXT_HEIGHT),
                 },
             }
@@ -468,6 +562,7 @@ function PerkFunctions.detailLayout(self, descriptionText)
     vFlexLayout.content:add(requirementsHeader)
     vFlexLayout.content:add(self:requirementsLayout())
     vFlexLayout.content:add(myui.padWidget(0, 2))
+    -- Add flavour text block only when it was provided
     if paddedFlavourText ~= nil then
         vFlexLayout.content:add(paddedFlavourText)
         vFlexLayout.content:add(myui.padWidget(0, 2))
