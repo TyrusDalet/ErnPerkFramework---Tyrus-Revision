@@ -453,7 +453,9 @@ local function paginateDescription(text)
             end
         end
 
-        table.insert(pages, text:sub(1, splitAt):gsub("%s+$", ""))
+        -- gsub returns (result, count); parentheses discard the count so
+        -- table.insert receives exactly one value, not two.
+        table.insert(pages, (text:sub(1, splitAt):gsub("%s+$", "")))
         text = text:sub(splitAt + 1):gsub("^%s+", "")
     end
 
@@ -955,132 +957,50 @@ end
 -- ============================================================
 --  BUTTON ELEMENTS
 --
---  Pick button:             "Acquire"  (greyed when unavailable)
---  Cancel button:           "Exit"
+--  All four action buttons live in a single permanent row in the
+--  footer.  They are always present in the layout — their content
+--  is never added or removed dynamically, which prevents OpenMW
+--  from destroying the underlying Element objects and crashing.
+--
+--  Prev / Next    - description page navigation.  Rendered as
+--                   'disabled' when the selected perk has only one
+--                   page, or when already at the first/last page.
+--  Acquire        - pick the selected perk ('disabled' when unavailable)
+--  Exit           - close the UI
+--
 --  remainingPointsElement:  "X Perk Points Remaining"
 --  perkPointCostElement:    "Cost: X" (blank when no perk selected)
 --
---  descriptionNavElement:   A self-contained Flex row containing Prev
---                           and Next page buttons.  It is HIDDEN (empty
---                           content) when the selected perk has only one
---                           page of description, and shown otherwise.
---                           This lives on its own row above Acquire/Exit.
---
---  All text elements and the pick button are refreshed together in
---  updatePickButtonElement().  The description nav is refreshed
---  separately in updateDescriptionPageButtons().
+--  All elements are refreshed together in updatePickButtonElement().
 -- ============================================================
 
-local pickButtonElement = ui.create {}
-local cancelButtonElement = ui.create {}
+local pickButtonElement              = ui.create {}
+local cancelButtonElement            = ui.create {}
 local previousDescriptionButtonElement = ui.create {}
-local nextDescriptionButtonElement = ui.create {}
-
--- Container for the Prev/Next description page buttons.
--- Its content is set to empty when pageCount <= 1, causing it to
--- collapse to zero height so it does not take up space in the layout.
-local descriptionNavElement = ui.create {
-    type  = ui.TYPE.Flex,
-    props = { horizontal = true },
-    content = ui.content {}
-}
-
--- ============================================================
---  updateDescriptionPageButtons
---
---  Rebuilds and shows/hides the descriptionNavElement based on
---  how many pages the currently selected perk has.
---
---  * 1 page  → element gets empty content (zero height, invisible)
---  * > 1 page → element is populated with Prev and Next buttons
---
---  Also used to keep the controller/keyboard page-nav hints correct.
--- ============================================================
-
-local function updateDescriptionPageButtons()
-    local selectedPerk = getSelectedPerk()
-    local page = 1
-    local pageCount = 1
-    if selectedPerk ~= nil then
-        local pages
-        page, pages = getCurrentDescriptionPage(selectedPerk)
-        pageCount = #pages
-    end
-
-    if pageCount <= 1 then
-        -- Single page: hide the navigation row entirely so it takes no space
-        descriptionNavElement.layout = {
-            type    = ui.TYPE.Flex,
-            props   = { horizontal = true },
-            content = ui.content {}
-        }
-        descriptionNavElement:update()
-        return
-    end
-
-    -- Multiple pages: rebuild Prev/Next buttons with correct enabled state
-    previousDescriptionButtonElement.layout = myui.createTextButton(
-        previousDescriptionButtonElement,
-        "Prev",
-        page > 1 and 'normal' or 'disabled',
-        'previousDescriptionButton',
-        {},
-        util.vector2(68, 17),
-        function() changeDescriptionPage(-1) end)
-    previousDescriptionButtonElement:update()
-
-    nextDescriptionButtonElement.layout = myui.createTextButton(
-        nextDescriptionButtonElement,
-        "Next",
-        page < pageCount and 'normal' or 'disabled',
-        'nextDescriptionButton',
-        {},
-        util.vector2(68, 17),
-        function() changeDescriptionPage(1) end)
-    nextDescriptionButtonElement:update()
-
-    -- Show the navigation row with both buttons
-    descriptionNavElement.layout = {
-        type    = ui.TYPE.Flex,
-        props   = { horizontal = true },
-        content = ui.content {
-            previousDescriptionButtonElement,
-            myui.padWidget(8, 0),
-            nextDescriptionButtonElement,
-        }
-    }
-    descriptionNavElement:update()
-end
+local nextDescriptionButtonElement     = ui.create {}
 
 local function updatePickButtonElement()
-    local color        = 'normal'
     local selectedPerk = getSelectedPerk()
 
-    if not perkAvailable(selectedPerk) then
-        color = 'disabled'
-    end
-
-    -- Button always reads "Acquire" — the cost is shown separately below
-    -- the remaining-points line so the button stays a fixed, clean width.
+    -- ---- Acquire button ----
+    local acquireColor = perkAvailable(selectedPerk) and 'normal' or 'disabled'
     pickButtonElement.layout = myui.createTextButton(
         pickButtonElement,
         "Acquire",
-        color,
+        acquireColor,
         'pickButton',
         {},
         util.vector2(129, 17),
         doPick)
     pickButtonElement:update()
 
-    -- Update the remaining perk points line
+    -- ---- Remaining points / cost lines ----
     local pts    = remainingPoints
     local plural = pts == 1 and "" or "s"
     remainingPointsElement.layout.props.text =
         tostring(pts) .. " Perk Point" .. plural .. " Remaining"
     remainingPointsElement:update()
 
-    -- Update the cost line: show "Cost: X" when a perk is selected,
-    -- blank otherwise so the layout doesn't show stale information.
     if selectedPerk ~= nil then
         perkPointCostElement.layout.props.text = "Cost: " .. tostring(selectedPerk:cost())
     else
@@ -1088,8 +1008,41 @@ local function updatePickButtonElement()
     end
     perkPointCostElement:update()
 
-    -- Refresh description page navigation alongside the rest of the footer
-    updateDescriptionPageButtons()
+    -- ---- Prev / Next page buttons ----
+    -- These are ALWAYS in the layout (never removed) to prevent OpenMW from
+    -- destroying the Element objects.  When the selected perk has only one
+    -- page, both buttons are simply rendered in the 'disabled' colour.
+    local page     = 1
+    local pageCount = 1
+    if selectedPerk ~= nil then
+        local pages
+        page, pages = getCurrentDescriptionPage(selectedPerk)
+        pageCount = #pages
+    end
+
+    -- Prev: disabled when there is no previous page (page 1 or only 1 page)
+    local prevColor = (pageCount > 1 and page > 1) and 'normal' or 'disabled'
+    previousDescriptionButtonElement.layout = myui.createTextButton(
+        previousDescriptionButtonElement,
+        "Prev",
+        prevColor,
+        'previousDescriptionButton',
+        {},
+        util.vector2(68, 17),
+        function() changeDescriptionPage(-1) end)
+    previousDescriptionButtonElement:update()
+
+    -- Next: disabled when there is no next page (last page or only 1 page)
+    local nextColor = (pageCount > 1 and page < pageCount) and 'normal' or 'disabled'
+    nextDescriptionButtonElement.layout = myui.createTextButton(
+        nextDescriptionButtonElement,
+        "Next",
+        nextColor,
+        'nextDescriptionButton',
+        {},
+        util.vector2(68, 17),
+        function() changeDescriptionPage(1) end)
+    nextDescriptionButtonElement:update()
 end
 
 cancelButtonElement.layout = myui.createTextButton(
@@ -1155,14 +1108,13 @@ end
 --                remainingPointsElement   ("X Perk Points Remaining")
 --                perkPointCostElement     ("Cost: X" or blank)
 --                pad
---                descriptionNavElement    (Prev/Next, hidden when 1 page)
---                pad
---                buttons row (centred)    Acquire | Exit
+--                buttons row (permanent): Prev | Next | Acquire | Exit
 --                pad
 --
---  Separating descriptionNavElement from the Acquire/Exit row means the
---  page buttons don't interfere visually with the action buttons, and
---  the row simply collapses when there is only one page.
+--  Prev/Next are always in the layout — they are simply rendered in
+--  the 'disabled' colour when the perk has only one description page.
+--  Dynamically adding/removing Elements from a layout destroys them
+--  in OpenMW's UI system, causing crashes on the next access.
 -- ============================================================
 
 local function menuLayout()
@@ -1242,7 +1194,7 @@ local function menuLayout()
                                                     haveThisPerk,
                                                 },
                                             },
-                                            -- BOTTOM: remaining points, cost, page nav, buttons.
+                                            -- BOTTOM: remaining points, cost, buttons.
                                             -- No grow: sizes to its natural content height
                                             -- and is always fully visible.
                                             {
@@ -1256,17 +1208,21 @@ local function menuLayout()
                                                     remainingPointsElement,
                                                     myui.padWidget(0, 2),
                                                     perkPointCostElement,
-                                                    myui.padWidget(0, 4),
-                                                    -- Description page navigation row.
-                                                    -- Populated only when pageCount > 1;
-                                                    -- collapses to zero height otherwise.
-                                                    descriptionNavElement,
-                                                    myui.padWidget(0, 4),
-                                                    -- Primary action buttons (always visible)
+                                                    myui.padWidget(0, 6),
+                                                    -- Single permanent button row.
+                                                    -- Prev/Next are always present; they
+                                                    -- render as 'disabled' when the selected
+                                                    -- perk has only one description page.
+                                                    -- This avoids dynamic content changes
+                                                    -- that would destroy Elements and crash.
                                                     {
                                                         type    = ui.TYPE.Flex,
                                                         props   = { horizontal = true },
                                                         content = ui.content {
+                                                            previousDescriptionButtonElement,
+                                                            myui.padWidget(8, 0),
+                                                            nextDescriptionButtonElement,
+                                                            myui.padWidget(8, 0),
                                                             pickButtonElement,
                                                             myui.padWidget(8, 0),
                                                             cancelButtonElement,

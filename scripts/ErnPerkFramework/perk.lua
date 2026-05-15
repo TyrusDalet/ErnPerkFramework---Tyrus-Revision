@@ -64,15 +64,18 @@ local REQUIREMENT_LINE_HEIGHT = 16
 
 local REQUIREMENT_CHARS_PER_LINE = 58
 
--- Height reserved for the optional flavour text block.
--- Flavour text is short by convention (one or two sentences).
-local FLAVOUR_TEXT_HEIGHT = 36
-
 -- Height of the main description text area.
 -- Pagination (see perkpage.lua) splits descriptions longer than
 -- DESCRIPTION_PAGE_SIZE characters across multiple pages, so this
 -- fixed height is generally sufficient for a single page.
 local DESCRIPTION_TEXT_HEIGHT = 210
+
+-- Minimum height (px) reserved for the flavour text block so that a
+-- very short flavour string still has some breathing room.
+-- The actual height is calculated dynamically via wrappedTextHeight()
+-- so long flavour strings (e.g. EEC's multi-sentence treasury text)
+-- are never clipped.
+local FLAVOUR_TEXT_MIN_HEIGHT = 20
 
 local ART_SIZE = util.vector2(224, 112)
 
@@ -94,6 +97,176 @@ local function wrappedTextHeight(text, charsPerLine, lineHeight)
         lineCount = lineCount + math.max(1, math.ceil(#line / charsPerLine))
     end
     return lineCount * lineHeight
+end
+
+-- ============================================================
+--  REQUIREMENT TEXT FORMATTING
+--
+--  The ErnPerkFramework builds orGroup requirement strings using
+--  the localization list_join / list_join_or keys, producing text
+--  like "A, B or C".  For faction rank requirements, each item is
+--  "{factionName} {rankName}".
+--
+--  Multi-branch guild requirements (e.g. Mages Guild + TR Skyrim/
+--  Cyrodiil/Hammerfell branches) appear as:
+--    "Mages Guild Evoker, Skyrim Mages Guild Evoker,
+--     Cyrodiil Mages Guild Evoker or Hammerfell Mages Guild Evoker"
+--
+--  Mixed-faction orGroups (e.g. Imperial Cult + Itinerant Priests)
+--  appear as:
+--    "Imperial Cult Layman, Order of Itinerant Priests Mendicant"
+--
+--  formatRequirement() detects which case it is and reformats:
+--    • Same rank + common guild core  →
+--        "Mages Guild Evoker in: Morrowind, Skyrim, Cyrodiil or Hammerfell"
+--    • Different ranks or no common core →
+--        "Imperial Cult Layman or Order of Itinerant Priests Mendicant"
+-- ============================================================
+
+--- Splits a localised orList string ("A, B or C") into its parts.
+--- Normalises " or " to ", " first so both separators are handled
+--- uniformly, regardless of how the mod author built the list.
+local function splitOrList(text)
+    -- Replace all " or " with ", " so we have a single separator
+    local normalized = text:gsub(" or ", ", ")
+    local parts = {}
+    for part in (normalized .. ","):gmatch("([^,]+),") do
+        local trimmed = part:match("^%s*(.-)%s*$")
+        if trimmed ~= "" then
+            table.insert(parts, trimmed)
+        end
+    end
+    return parts
+end
+
+--- Returns the longest word-sequence from the END shared by all
+--- strings in the list, or nil if there is no common suffix.
+--- Used to identify the "core guild name" across regional branches.
+local function commonWordSuffix(strings)
+    -- Split each string into words
+    local wordLists = {}
+    for _, s in ipairs(strings) do
+        local words = {}
+        for w in s:gmatch("%S+") do table.insert(words, w) end
+        table.insert(wordLists, words)
+    end
+
+    local first = wordLists[1]
+    -- Try suffix lengths from longest to shortest
+    for suffixLen = #first, 1, -1 do
+        -- Build the candidate suffix from the first string
+        local suffix = {}
+        for i = #first - suffixLen + 1, #first do
+            table.insert(suffix, first[i])
+        end
+        local suffixStr = table.concat(suffix, " ")
+
+        local allMatch = true
+        for _, words in ipairs(wordLists) do
+            if #words < suffixLen then
+                allMatch = false
+                break
+            end
+            local tail = {}
+            for i = #words - suffixLen + 1, #words do
+                table.insert(tail, words[i])
+            end
+            if table.concat(tail, " ") ~= suffixStr then
+                allMatch = false
+                break
+            end
+        end
+
+        if allMatch then
+            return suffixStr
+        end
+    end
+
+    return nil  -- no common suffix found
+end
+
+--- Formats a requirement display string for compact presentation.
+---
+--- If the text contains multiple faction rank requirements that share
+--- the same rank and a common guild name core, they are collapsed to:
+---   "Guild Rank in: Morrowind, Skyrim, Cyrodiil or Hammerfell"
+--- (the base/default faction branch is always labelled "Morrowind").
+---
+--- If the parts are genuinely different factions (different ranks or no
+--- shared guild core), they are joined with " or ":
+---   "Imperial Cult Layman or Order of Itinerant Priests Mendicant"
+---
+--- Single-item strings are returned unchanged.
+local function formatRequirement(text)
+    local parts = splitOrList(text)
+
+    -- Single item: nothing to reformat
+    if #parts <= 1 then
+        return text
+    end
+
+    -- Extract the last word (rank name) and the preceding words (guild name)
+    -- from each part.  e.g. "Skyrim Mages Guild Evoker" → guild="Skyrim Mages Guild", rank="Evoker"
+    local ranks      = {}
+    local guildNames = {}
+    for _, part in ipairs(parts) do
+        local guild, rank = part:match("^(.+)%s+(%S+)$")
+        if rank then
+            table.insert(ranks,      rank)
+            table.insert(guildNames, guild)
+        else
+            -- Single-word entry — treat the whole thing as the rank
+            table.insert(ranks,      part)
+            table.insert(guildNames, "")
+        end
+    end
+
+    -- If ranks differ, these are genuinely different factions; join with "or"
+    for _, rank in ipairs(ranks) do
+        if rank ~= ranks[1] then
+            return table.concat(parts, " or ")
+        end
+    end
+
+    -- Same rank across all parts: look for a shared guild name core
+    local coreGuild = commonWordSuffix(guildNames)
+    if not coreGuild or coreGuild == "" then
+        -- No common core: different factions that happen to share a rank name
+        return table.concat(parts, " or ")
+    end
+
+    -- Build region labels by stripping the core guild name from each guild string.
+    -- An empty prefix means this IS the base/default (Morrowind) faction.
+    local regions = {}
+    for _, guildName in ipairs(guildNames) do
+        local prefix
+        if guildName == coreGuild then
+            prefix = "Morrowind"
+        else
+            -- Remove the core suffix (e.g. "Skyrim Mages Guild" → "Skyrim")
+            prefix = guildName:sub(1, #guildName - #coreGuild)
+            prefix = prefix:match("^%s*(.-)%s*$")
+            if prefix == "" then prefix = "Morrowind" end
+        end
+        table.insert(regions, prefix)
+    end
+
+    -- Build the region list string: "Morrowind, Skyrim, Cyrodiil or Hammerfell"
+    local regionStr
+    if #regions == 1 then
+        regionStr = regions[1]
+    elseif #regions == 2 then
+        regionStr = regions[1] .. " or " .. regions[2]
+    else
+        local allButLast = {}
+        for i = 1, #regions - 1 do
+            table.insert(allButLast, regions[i])
+        end
+        regionStr = table.concat(allButLast, ", ") .. " or " .. regions[#regions]
+    end
+
+    -- "Mages Guild Evoker in: Morrowind, Skyrim, Cyrodiil or Hammerfell"
+    return coreGuild .. " " .. ranks[1] .. " in: " .. regionStr
 end
 
 --- NewPerk makes a new perk object from a record data table.
@@ -344,6 +517,11 @@ function PerkFunctions.requirementsLayout(self)
     local reqs = self:evaluateRequirements()
 
     for i, req in ipairs(reqs.requirements) do
+        -- Format the requirement text for compact display.
+        -- Multi-branch guild chains (e.g. TR regional Mages Guild branches)
+        -- are collapsed to "Guild Rank in: Morrowind, Skyrim, Cyrodiil or Hammerfell".
+        -- Genuinely different factions are joined with " or ".
+        local displayText = formatRequirement(req.name)
         local reqLayout = {
             template = interfaces.MWUI.templates.textParagraph,
             --type = ui.TYPE.Text,
@@ -354,8 +532,7 @@ function PerkFunctions.requirementsLayout(self)
                 wordWrap = true,
                 textAlignH = ui.ALIGNMENT.Start,
                 textAlignV = ui.ALIGNMENT.Start,
-                --relativePosition = util.vector2(0, 0.5),
-                text = req.name,
+                text = displayText,
             },
         }
         if not req.satisfied then
@@ -492,6 +669,12 @@ function PerkFunctions.detailLayout(self, descriptionText)
         -- Wrap in plain ASCII double-quotes for a lore-quote aesthetic.
         -- sanitizeText() strips any control characters that would crash MyGUI.
         local quotedFlavour = '"' .. sanitizeText(flavourText) .. '"'
+        -- Calculate the height dynamically so long flavour strings are never
+        -- clipped.  wrappedTextHeight() counts wrapped lines using the same
+        -- chars-per-line constant as the requirements list.
+        local flavourHeight = math.max(
+            FLAVOUR_TEXT_MIN_HEIGHT,
+            wrappedTextHeight(quotedFlavour, REQUIREMENT_CHARS_PER_LINE, REQUIREMENT_LINE_HEIGHT))
         paddedFlavourText = {
             name = "flavourText",
             type = ui.TYPE.Flex,
@@ -515,7 +698,7 @@ function PerkFunctions.detailLayout(self, descriptionText)
                         -- "flavour" feel separate from the mechanical text.
                         textColor = myui.textColors.notify,
                         text = quotedFlavour,
-                        size = util.vector2(DETAIL_TEXT_WIDTH, FLAVOUR_TEXT_HEIGHT),
+                        size = util.vector2(DETAIL_TEXT_WIDTH, flavourHeight),
                     },
                 }
             },
