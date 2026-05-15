@@ -1,0 +1,3 @@
+Copyright (C) 2025 Erin Pentecost - For the Perk Framework itself
+
+Copyright (C) 2026 Robbie Barker - additions to the framework, tabs, flavour text, categories
