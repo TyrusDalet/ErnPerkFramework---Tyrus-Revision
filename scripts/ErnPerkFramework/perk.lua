@@ -215,7 +215,7 @@ local function formatRequirement(text)
             table.insert(ranks,      rank)
             table.insert(guildNames, guild)
         else
-            -- Single-word entry — treat the whole thing as the rank
+            -- Single-word entry - treat the whole thing as the rank
             table.insert(ranks,      part)
             table.insert(guildNames, "")
         end
@@ -596,7 +596,7 @@ end
 --- Panel order (top to bottom):
 ---   1. Art image
 ---   2. "Requirements" header + requirements list
----   3. Flavour text block  (OPTIONAL — omitted entirely when nil, so perks
+---   3. Flavour text block  (OPTIONAL - omitted entirely when nil, so perks
 ---      that do not define localizedFlavour/localizedFlavor are unaffected)
 ---   4. Perk name header
 ---   5. Description text   (may be paginated; descriptionText receives the

@@ -399,7 +399,7 @@ end
 --
 --  Two modes:
 --   a) Explicit \f breaks: if the description contains any \f characters,
---      those are the page boundaries.  This gives full authorial control —
+--      those are the page boundaries.  This gives full authorial control -
 --      e.g. put \f between each effect description for one effect per page.
 --   b) Automatic: splits at the nearest paragraph or word boundary before
 --      DESCRIPTION_PAGE_SIZE characters.
@@ -726,7 +726,7 @@ local function viewPerk(perkID, idx)
 
     log(nil, "Showing detail for perk " .. foundPerk:name())
 
-    -- Update the detail panel and "have this perk" notice directly — these
+    -- Update the detail panel and "have this perk" notice directly - these
     -- are safe to call from inside a UI callback because they are separate
     -- elements not currently being rendered.
     perkDetailElement.layout = foundPerk:detailLayout(selectedDescriptionText())
@@ -958,7 +958,7 @@ end
 --  BUTTON ELEMENTS
 --
 --  All four action buttons live in a single permanent row in the
---  footer.  They are always present in the layout — their content
+--  footer.  They are always present in the layout - their content
 --  is never added or removed dynamically, which prevents OpenMW
 --  from destroying the underlying Element objects and crashing.
 --
@@ -1111,7 +1111,7 @@ end
 --                buttons row (permanent): Prev | Next | Acquire | Exit
 --                pad
 --
---  Prev/Next are always in the layout — they are simply rendered in
+--  Prev/Next are always in the layout - they are simply rendered in
 --  the 'disabled' colour when the perk has only one description page.
 --  Dynamically adding/removing Elements from a layout destroys them
 --  in OpenMW's UI system, causing crashes on the next access.
@@ -1380,8 +1380,8 @@ end
 
 local function onMouseWheel(direction)
     if menu == nil then return end
-    -- direction < 0 = wheel scrolled down → move cursor DOWN the list (index increases)
-    -- direction > 0 = wheel scrolled up   → move cursor UP the list   (index decreases)
+    -- direction < 0 = wheel scrolled down - move cursor DOWN the list (index increases)
+    -- direction > 0 = wheel scrolled up   - move cursor UP the list   (index decreases)
     -- list.scroll(step) does selectedIndex -= step, so negative step = index increase.
     if direction < 0 then
         perkList:scroll(-1)
@@ -1432,11 +1432,11 @@ local function onFrame(dt)
 
     -- ---------------------------------------------------------------
     -- List vertical navigation
-    -- DownArrow / DPad Down → move cursor DOWN (higher index)
-    -- UpArrow   / DPad Up   → move cursor UP   (lower index)
+    -- DownArrow / DPad Down - move cursor DOWN (higher index)
+    -- UpArrow   / DPad Up   - move cursor UP   (lower index)
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.DownArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadDown) then
-        perkList:scroll(-1)  -- scroll(-1) increments selectedIndex → cursor moves DOWN
+        perkList:scroll(-1)  -- scroll(-1) increments selectedIndex - cursor moves DOWN
         debounce = keyDownStatus and DEBOUNCE_FRAMES or LONG_DEBOUNCE
         keyDownStatus = true
         redraw()
@@ -1444,7 +1444,7 @@ local function onFrame(dt)
         keyDownStatus = false
     end
     if input.isKeyPressed(input.KEY.UpArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadUp) then
-        perkList:scroll(1)   -- scroll(1) decrements selectedIndex → cursor moves UP
+        perkList:scroll(1)   -- scroll(1) decrements selectedIndex - cursor moves UP
         debounce = keyUpStatus and DEBOUNCE_FRAMES or LONG_DEBOUNCE
         keyUpStatus = true
         redraw()
@@ -1454,8 +1454,8 @@ local function onFrame(dt)
 
     -- ---------------------------------------------------------------
     -- Tab navigation
-    -- LeftArrow / DPad Left  → previous tab
-    -- RightArrow / DPad Right → next tab
+    -- LeftArrow / DPad Left  - previous tab
+    -- RightArrow / DPad Right - next tab
     -- Fires once on initial press; held keys are debounced via LONG_DEBOUNCE.
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.LeftArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadLeft) then
@@ -1480,7 +1480,7 @@ local function onFrame(dt)
 
     -- ---------------------------------------------------------------
     -- Dropdown expand/collapse
-    -- E key / X controller button → toggle the selected header dropdown
+    -- E key / X controller button - toggle the selected header dropdown
     -- Fires on RELEASE so a single tap produces exactly one toggle.
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.E) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.X) then
@@ -1492,8 +1492,8 @@ local function onFrame(dt)
 
     -- ---------------------------------------------------------------
     -- Description page navigation
-    -- Comma (,) key / Left Shoulder (LB) → previous page
-    -- Period (.) key / Right Shoulder (RB) → next page
+    -- Comma (,) key / Left Shoulder (LB) - previous page
+    -- Period (.) key / Right Shoulder (RB) - next page
     -- Fires on RELEASE so each press advances exactly one page.
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.Comma) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.LeftShoulder) then
@@ -1512,7 +1512,7 @@ local function onFrame(dt)
 
     -- ---------------------------------------------------------------
     -- Acquire perk
-    -- Enter / A button → pick selected perk (fires on RELEASE)
+    -- Enter / A button - pick selected perk (fires on RELEASE)
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.Enter) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.A) then
         keyEnterStatus = true
@@ -1529,7 +1529,7 @@ local function onFrame(dt)
 
     -- ---------------------------------------------------------------
     -- Exit
-    -- Escape / B button → close the UI (fires on RELEASE)
+    -- Escape / B button - close the UI (fires on RELEASE)
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.Escape) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.B) then
         keyEscapeStatus = true
