@@ -117,9 +117,9 @@ end
 --    "Imperial Cult Layman, Order of Itinerant Priests Mendicant"
 --
 --  formatRequirement() detects which case it is and reformats:
---    • Same rank + common guild core  →
+--    - Same rank + common guild core  -
 --        "Mages Guild Evoker in: Morrowind, Skyrim, Cyrodiil or Hammerfell"
---    • Different ranks or no common core →
+--    - Different ranks or no common core -
 --        "Imperial Cult Layman or Order of Itinerant Priests Mendicant"
 -- ============================================================
 
@@ -206,7 +206,7 @@ local function formatRequirement(text)
     end
 
     -- Extract the last word (rank name) and the preceding words (guild name)
-    -- from each part.  e.g. "Skyrim Mages Guild Evoker" → guild="Skyrim Mages Guild", rank="Evoker"
+    -- from each part.  e.g. "Skyrim Mages Guild Evoker" - guild="Skyrim Mages Guild", rank="Evoker"
     local ranks      = {}
     local guildNames = {}
     for _, part in ipairs(parts) do
@@ -243,7 +243,7 @@ local function formatRequirement(text)
         if guildName == coreGuild then
             prefix = "Morrowind"
         else
-            -- Remove the core suffix (e.g. "Skyrim Mages Guild" → "Skyrim")
+            -- Remove the core suffix (e.g. "Skyrim Mages Guild" - "Skyrim")
             prefix = guildName:sub(1, #guildName - #coreGuild)
             prefix = prefix:match("^%s*(.-)%s*$")
             if prefix == "" then prefix = "Morrowind" end
