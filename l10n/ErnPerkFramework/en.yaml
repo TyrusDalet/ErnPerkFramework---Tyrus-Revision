@@ -11,9 +11,6 @@ perksPerLevelDescription: "How many perks to gain per character level."
 disableName: "Disable Mod"
 disableDescription: "Disable all perks."
 
-showOnRestName: "Show Perk Window On Rest"
-showOnRestDescription: "You'll need this if you don't get Level Up screens due to other mods."
-
 enableLoggingName: "Verbose Logging"
 
 noRequirement: "<None>"

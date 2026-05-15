@@ -1,6 +1,3 @@
-# The ordering of these next two is critical.
-MENU: scripts/ErnPerkFramework/menu_settings.lua
-
 GLOBAL:scripts/ErnPerkFramework/global.lua
 PLAYER:scripts/ErnPerkFramework/manifest.lua
 PLAYER:scripts/ErnPerkFramework/player.lua
