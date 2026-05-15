@@ -12,7 +12,7 @@ A perk selection window will pop up after your level up window (for NCGDMW users
 
 ## Installing
 
-Download the [latest version here](https://github.com/erinpentecost/ErnPerkFramework/archive/refs/heads/main.zip).
+Download the [latest version here](https://github.com/TyrusDalet/ErnPerkFramework---Tyrus-Revision/archive/refs/heads/main.zip).
 
 Extract to your `mods/` folder. In your `openmw.cfg` file, add these lines in the correct spots:
 
