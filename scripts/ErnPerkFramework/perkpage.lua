@@ -38,6 +38,100 @@ local TAB_NAV_BUTTON_WIDTH = 28
 local TAB_GAP = 4
 local MAX_VISIBLE_TABS = 6
 
+-- ============================================================
+--  OBTAINED PERK COLOUR
+--
+--  Perks the player already has are shown in a muted light green
+--  rather than grey, making it immediately obvious which perks
+--  are owned vs locked.  Group headers and tabs where every perk
+--  is already obtained are tinted the same colour.
+--
+--  These are literal colour values rather than myui named keys;
+--  createObtainedButton() handles the three interaction states
+--  (default, over, pressed) using slight brightness variations.
+-- ============================================================
+
+local COLOUR_OBTAINED         = util.color.rgb(0.45, 0.75, 0.45)  -- resting green
+local COLOUR_OBTAINED_OVER    = util.color.rgb(0.60, 0.90, 0.60)  -- lighter on hover
+local COLOUR_OBTAINED_PRESSED = util.color.rgb(0.35, 0.60, 0.35)  -- darker on click
+
+-- Creates a borderless text button using the obtained (green) colour set.
+-- Mirrors myui.createTextButtonBorderless but accepts literal colour values
+-- instead of a named key, so it works without modifying myui.lua.
+local function createObtainedButton(parent, label, name, buttonFunction, args)
+    local overlayResource = ui.texture { path = 'icons/default icon.dds', size = util.vector2(0, 0) }
+    local buttonLayout = {
+        name = name,
+        type = ui.TYPE.Container,
+        props = {},
+        userData = {},
+        content = ui.content {
+            {
+                name = 'vFlex',
+                type = ui.TYPE.Flex,
+                props = {},
+                content = ui.content {
+                    {
+                        name = 'hFlex',
+                        type = ui.TYPE.Flex,
+                        props = { horizontal = true },
+                        content = ui.content {
+                            { name = 'padding', props = { size = util.vector2(8, 0) } },
+                            {
+                                name = 'text',
+                                type = ui.TYPE.Text,
+                                template = interfaces.MWUI.templates.textNormal,
+                                props = {
+                                    text = label,
+                                    textColor = COLOUR_OBTAINED,
+                                },
+                            },
+                            { name = 'padding', props = { size = util.vector2(8, 0) } },
+                        },
+                    },
+                    { name = 'padding', props = { size = util.vector2(0, 1) } },
+                },
+            },
+            {
+                name = 'overlay',
+                type = ui.TYPE.Image,
+                props = { size = util.vector2(129, 17), alpha = 0, resource = overlayResource },
+            },
+        },
+    }
+
+    local async = require('openmw.async')
+    local ambient = require('openmw.ambient')
+    buttonLayout.events = {
+        mousePress = async:callback(function(mouseEvent, data)
+            if mouseEvent.button == 1 then
+                data.content.vFlex.content.hFlex.content.text.props.textColor = COLOUR_OBTAINED_PRESSED
+                ambient.playSound('Menu Click')
+                parent:update()
+            end
+        end),
+        mouseRelease = async:callback(function(mouseEvent, data)
+            if mouseEvent.button == 1 then
+                data.content.vFlex.content.hFlex.content.text.props.textColor = COLOUR_OBTAINED_OVER
+                if buttonFunction then
+                    buttonFunction(table.unpack(args or {}))
+                end
+                parent:update()
+            end
+        end),
+        focusGain = async:callback(function(_, data)
+            data.content.vFlex.content.hFlex.content.text.props.textColor = COLOUR_OBTAINED_OVER
+            parent:update()
+        end),
+        focusLoss = async:callback(function(_, data)
+            data.content.vFlex.content.hFlex.content.text.props.textColor = COLOUR_OBTAINED
+            parent:update()
+        end),
+    }
+
+    return buttonLayout
+end
+
 -- Maximum characters per description page before automatic pagination kicks in.
 -- You can also force a page break at any point by inserting a form-feed
 -- character (\f) directly in the localizedDescription string.
@@ -399,7 +493,7 @@ end
 --
 --  Two modes:
 --   a) Explicit \f breaks: if the description contains any \f characters,
---      those are the page boundaries.  This gives full authorial control -
+--      those are the page boundaries.  This gives full authorial control —
 --      e.g. put \f between each effect description for one effect per page.
 --   b) Automatic: splits at the nearest paragraph or word boundary before
 --      DESCRIPTION_PAGE_SIZE characters.
@@ -570,6 +664,64 @@ local function tabHasAvailablePerk(tree, typeName)
 end
 
 -- ============================================================
+--  OBTAINED STATE HELPERS
+--
+--  groupAllObtained / tabAllObtained return true when every
+--  visible perk in the group / tab has already been picked.
+--  Used to colour the header/tab green as a clear visual signal
+--  that the player has completed that section.
+-- ============================================================
+
+-- Returns true if at least one visible perk in the group is obtained,
+-- AND every visible perk in the group is obtained.
+-- "Visible" means: either already active/obtained, or not hidden.
+-- Hidden perks that are not yet obtained are excluded from the check,
+-- but if ALL perks are hidden-and-unobtained the function returns false
+-- (nothing obtained = not a completed group).
+local function groupAllObtained(tree, typeName, groupName)
+    local groups = tree[typeName]
+    if not groups then return false end
+    local ids = groups[groupName]
+    if not ids or #ids == 0 then return false end
+
+    local anyObtained = false
+    for _, id in ipairs(ids) do
+        local perkObj  = interfaces.ErnPerkFramework.getPerks()[id]
+        local obtained = perkObj:active() or (justPickedPerks[id] == true)
+        -- A perk is "visible" if it is obtained OR not hidden.
+        -- Perks that are hidden AND unobtained are invisible and excluded.
+        local visible  = obtained or (not perkObj:hidden())
+        if visible then
+            if obtained then
+                anyObtained = true
+            else
+                -- At least one visible perk is not yet obtained
+                return false
+            end
+        end
+    end
+    -- Only green if we actually found at least one obtained perk
+    return anyObtained
+end
+
+-- Returns true if every group in the tab has all its visible perks obtained
+-- AND at least one perk anywhere in the tab is obtained.
+-- TAB_ALL is never considered "all obtained" — it spans everything.
+local function tabAllObtained(tree, typeName)
+    if typeName == TAB_ALL then return false end
+    local groups = tree[typeName]
+    if not groups then return false end
+    local anyGroup = false
+    for groupName, _ in pairs(groups) do
+        if not groupAllObtained(tree, typeName, groupName) then
+            return false
+        end
+        anyGroup = true
+    end
+    return anyGroup  -- false if there were no groups at all
+end
+
+-- ============================================================
 --  TAB BAR UI
 --
 --  A horizontal row of text buttons, one per tab name.
@@ -629,28 +781,20 @@ local function buildTabBar(tabNames, tree)
     local lastTab = hasOverflow and math.min(tabCount, firstTab + MAX_VISIBLE_TABS - 1) or tabCount
 
     for i = firstTab, lastTab do
-        local tabName = tabNames[i]
-        local isActive    = (tabName == activeTabType)
-        local hasAvail    = tabHasAvailablePerk(tree, tabName)
+        local tabName   = tabNames[i]
+        local isActive  = (tabName == activeTabType)
+        local hasAvail  = tabHasAvailablePerk(tree, tabName)
+        local allDone   = tabAllObtained(tree, tabName)
 
-        -- Colour logic:
+        -- Colour priority:
         --   active   = currently selected tab
-        --   normal   = selectable, has available perks (or is TAB_ALL)
-        --   disabled = no acquirable perks in this tab right now
-        local color
-        if isActive then
-            color = 'active'
-        elseif hasAvail then
-            color = 'normal'
-        else
-            color = 'disabled'
-        end
-
+        --   obtained = all perks in this tab are already owned (green)
+        --   normal   = selectable, has acquirable perks
+        --   disabled = no acquirable perks right now
         local btn = ui.create {}
         local capturedTab = tabName
         local clickFn
         if hasAvail and not isActive then
-            -- Only wire up a click handler when the tab is selectable
             clickFn = function()
                 activeTabType  = capturedTab
                 expandedGroups = {}
@@ -658,19 +802,36 @@ local function buildTabBar(tabNames, tree)
                 pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
             end
         else
-            -- Disabled or already-active tabs do nothing on click
             clickFn = function() end
         end
 
-        btn.layout = myui.createTextButtonBorderless(
-            btn,
-            capturedTab,
-            color,
-            'tab_' .. capturedTab,
-            {},
-            util.vector2(TAB_BUTTON_WIDTH, 17),
-            clickFn,
-            {})
+        if allDone and not isActive then
+            -- All perks obtained: use the green obtained button
+            btn.layout = createObtainedButton(
+                btn,
+                capturedTab,
+                'tab_' .. capturedTab,
+                clickFn,
+                {})
+        else
+            local color
+            if isActive then
+                color = 'active'
+            elseif hasAvail then
+                color = 'normal'
+            else
+                color = 'disabled'
+            end
+            btn.layout = myui.createTextButtonBorderless(
+                btn,
+                capturedTab,
+                color,
+                'tab_' .. capturedTab,
+                {},
+                util.vector2(TAB_BUTTON_WIDTH, 17),
+                clickFn,
+                {})
+        end
         btn:update()
         content:add(btn)
         content:add(myui.padWidget(TAB_GAP, 0))
@@ -726,7 +887,7 @@ local function viewPerk(perkID, idx)
 
     log(nil, "Showing detail for perk " .. foundPerk:name())
 
-    -- Update the detail panel and "have this perk" notice directly - these
+    -- Update the detail panel and "have this perk" notice directly — these
     -- are safe to call from inside a UI callback because they are separate
     -- elements not currently being rendered.
     perkDetailElement.layout = foundPerk:detailLayout(selectedDescriptionText())
@@ -753,31 +914,25 @@ local function renderListEntry(idx, isSelected, tree)
 
     if entry.kind == "header" then
         -- Group header row.
-        -- Check whether this group has any acquirable perks so we can
-        -- grey it out and prevent expanding an empty/locked group.
-        local hasAvail      = groupHasAvailablePerk(tree, activeTabType, entry.group)
-        local isExpanded    = expandedGroups[entry.group] == true
-        local arrow         = isExpanded and "v " or "> "
-        local label         = arrow .. entry.group
+        -- Check whether this group has any acquirable perks, and whether
+        -- all its perks are already obtained, for colour selection.
+        local hasAvail   = groupHasAvailablePerk(tree, activeTabType, entry.group)
+        local allDone    = groupAllObtained(tree, activeTabType, entry.group)
+        local isExpanded = expandedGroups[entry.group] == true
+        local arrow      = isExpanded and "v " or "> "
+        local label      = arrow .. entry.group
         local capturedGroup = entry.group
 
-        local color
-        if hasAvail then
-            color = 'normal'
-        else
-            color = 'disabled'
-        end
-
         local clickFn
-        if hasAvail then
+        if hasAvail or allDone then
+            -- Allow expanding even when all perks are obtained, so the player
+            -- can still view the perks they have.
             clickFn = function()
-                -- Toggle this group without affecting any others
                 if expandedGroups[capturedGroup] then
                     expandedGroups[capturedGroup] = nil
                 else
                     expandedGroups[capturedGroup] = true
                 end
-                -- Don't reset selectedIndex so the cursor stays where it was
                 pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
             end
         else
@@ -785,42 +940,67 @@ local function renderListEntry(idx, isSelected, tree)
         end
 
         local btn = ui.create {}
-        btn.layout = myui.createTextButtonBorderless(
-            btn,
-            label,
-            color,
-            'header_' .. capturedGroup,
-            {},
-            util.vector2(129, 17),
-            clickFn,
-            {})
+        if isSelected then
+            -- Keyboard/controller cursor is on this header: always use 'active'
+            -- so the player can see where they are regardless of obtained state.
+            btn.layout = myui.createTextButtonBorderless(
+                btn, label, 'active',
+                'header_' .. capturedGroup, {},
+                util.vector2(129, 17), clickFn, {})
+        elseif allDone then
+            -- Every perk in this group is obtained: show in green
+            btn.layout = createObtainedButton(
+                btn,
+                label,
+                'header_' .. capturedGroup,
+                clickFn,
+                {})
+        else
+            local color = hasAvail and 'normal' or 'disabled'
+            btn.layout = myui.createTextButtonBorderless(
+                btn,
+                label,
+                color,
+                'header_' .. capturedGroup,
+                {},
+                util.vector2(129, 17),
+                clickFn,
+                {})
+        end
         btn:update()
         return btn
     else
         -- Perk row.
-        local perkObj = interfaces.ErnPerkFramework.getPerks()[entry.id]
-        local color = 'normal'
-        if isSelected then
-            color = 'active'
-        elseif hasPerk(idx) then
-            -- Already taken: grey out, stay in place
-            color = 'disabled'
-        elseif not satisfied(entry.id) then
-            color = 'disabled'
-        end
-
+        -- Colour priority:
+        --   active   = currently selected in the list
+        --   obtained = player already has this perk (green)
+        --   disabled = requirements not met (or not yet satisfiable)
+        --   normal   = available to pick
+        local perkObj    = interfaces.ErnPerkFramework.getPerks()[entry.id]
+        local isObtained = hasPerk(idx)
         local capturedId  = entry.id
         local capturedIdx = idx
         local btn = ui.create {}
-        btn.layout = myui.createTextButtonBorderless(
-            btn,
-            perkObj:name(),
-            color,
-            'selectButton_' .. capturedId,
-            {},
-            util.vector2(129, 17),
-            viewPerk,
-            { capturedId, capturedIdx })
+
+        if isSelected then
+            -- Selected row always uses 'active' regardless of obtained state
+            btn.layout = myui.createTextButtonBorderless(
+                btn, perkObj:name(), 'active',
+                'selectButton_' .. capturedId, {},
+                util.vector2(129, 17), viewPerk, { capturedId, capturedIdx })
+        elseif isObtained then
+            -- Already obtained: green button, still clickable to view details
+            btn.layout = createObtainedButton(
+                btn, perkObj:name(),
+                'selectButton_' .. capturedId,
+                viewPerk, { capturedId, capturedIdx })
+        else
+            local color = (not satisfied(entry.id)) and 'disabled' or 'normal'
+            btn.layout = myui.createTextButtonBorderless(
+                btn, perkObj:name(), color,
+                'selectButton_' .. capturedId, {},
+                util.vector2(129, 17), viewPerk, { capturedId, capturedIdx })
+        end
         btn:update()
 
         -- Indent perk rows that live inside an open dropdown group.
@@ -890,7 +1070,12 @@ end
 --  considered, matching the clickable-tab logic in buildTabBar.
 -- ============================================================
 
-local function navigateTab(delta)
+-- navigateTab(delta, tree) moves the active tab by delta (+1 = right, -1 = left),
+-- wrapping around at the ends.  tree is passed explicitly because cachedTree is
+-- declared later in the file and would be nil if captured as an upvalue here.
+-- Only tabs with available perks (or TAB_ALL) are reachable, matching the
+-- clickable-tab logic in buildTabBar.
+local function navigateTab(delta, tree)
     if #cachedTabNames == 0 then return end
 
     -- Find the index of the currently active tab
@@ -908,7 +1093,7 @@ local function navigateTab(delta)
     for _ = 1, count do
         currentIdx = ((currentIdx - 1 + delta) % count) + 1
         local candidate = cachedTabNames[currentIdx]
-        if candidate == TAB_ALL or tabHasAvailablePerk(cachedTree, candidate) then
+        if candidate == TAB_ALL or tabHasAvailablePerk(tree, candidate) then
             activeTabType  = candidate
             expandedGroups = {}
             if perkList then perkList.selectedIndex = 1 end
@@ -919,12 +1104,80 @@ local function navigateTab(delta)
 end
 
 -- ============================================================
---  DROPDOWN TOGGLE (keyboard / controller)
+--  LIST NAVIGATION WITH SKIP
 --
---  toggleSelectedDropdown() expands or collapses the group
---  header row that is currently selected in the perk list.
---  Has no effect when the selection is on a perk row.
+--  isEntryNavigable(idx) defines which list entries are valid
+--  landing points for keyboard/controller navigation:
+--    • Header rows: navigable if the group has acquirable perks
+--      OR all its perks are already obtained (so the player can
+--      still expand and view them).  Purely disabled/empty headers
+--      are skipped.
+--    • Perk rows: navigable if the perk is obtained OR its
+--      requirements are satisfied.  Perks with unmet requirements
+--      are skipped since there is nothing the player can do with
+--      them right now.
+--
+--  navigateList(direction) moves the cursor by one step in the
+--  given direction (+1 = down / higher index, -1 = up / lower
+--  index), then keeps walking in that direction until a navigable
+--  entry is found or the boundary is reached.  The cursor never
+--  wraps around; it stops at index 1 or the total count.
 -- ============================================================
+
+local function isEntryNavigable(idx, tree)
+    local entry = currentListEntries[idx]
+    if not entry then return false end
+    if entry.kind == "header" then
+        -- Navigable if the group has acquirable perks or is fully obtained.
+        -- tree is passed explicitly because cachedTree is declared after this
+        -- function in the file; Lua locals are only visible from their
+        -- declaration point onward, so capturing cachedTree as an upvalue
+        -- here would always read nil.
+        return groupHasAvailablePerk(tree, activeTabType, entry.group)
+            or groupAllObtained(tree, activeTabType, entry.group)
+    else
+        -- Navigable if the perk is obtained or requirements are currently met
+        return hasPerk(idx) or satisfied(entry.id)
+    end
+end
+
+-- Moves the cursor in `direction` (+1 = down, -1 = up), skipping
+-- entries that are not navigable.  Stops at the list boundary.
+-- tree is the current category tree; passed in from the call site so
+-- isEntryNavigable always receives a valid (non-nil) table.
+local function navigateList(direction, tree)
+    local total = #currentListEntries
+    if total == 0 then return end
+
+    local current   = perkList.selectedIndex
+    local candidate = current + direction
+
+    -- Walk until we find a navigable entry or go out of bounds
+    for _ = 1, total do
+        if candidate < 1 then
+            candidate = 1
+            break
+        end
+        if candidate > total then
+            candidate = total
+            break
+        end
+        if isEntryNavigable(candidate, tree) then
+            break
+        end
+        candidate = candidate + direction
+    end
+
+    -- Clamp to valid range and apply
+    candidate = math.max(1, math.min(total, candidate))
+    perkList.selectedIndex = candidate
+    -- Ensure the list scrolls so the selected entry is visible
+    if perkList.selectedIndex < perkList.topIndex then
+        perkList.topIndex = perkList.selectedIndex
+    elseif perkList.selectedIndex > perkList.topIndex + perkList.displayCount - 1 then
+        perkList.topIndex = perkList.selectedIndex - perkList.displayCount + 1
+    end
+end
 
 local function toggleSelectedDropdown()
     local entry = currentListEntries[getSelectedIndex()]
@@ -951,14 +1204,16 @@ local function changeDescriptionPage(delta)
     if selectedPerk == nil then return end
     local page, pages = getCurrentDescriptionPage(selectedPerk)
     activeDescriptionPageByPerkID[selectedPerk:id()] = math.max(1, math.min(page + delta, #pages))
-    pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
+    -- Only the detail panel changes; use the lightweight refresh to avoid
+    -- the frame spike that full redraw() causes when changing pages.
+    pself:sendEvent(MOD_NAME .. "_internalLightRedraw", {})
 end
 
 -- ============================================================
 --  BUTTON ELEMENTS
 --
 --  All four action buttons live in a single permanent row in the
---  footer.  They are always present in the layout - their content
+--  footer.  They are always present in the layout — their content
 --  is never added or removed dynamically, which prevents OpenMW
 --  from destroying the underlying Element objects and crashing.
 --
@@ -1111,7 +1366,7 @@ end
 --                buttons row (permanent): Prev | Next | Acquire | Exit
 --                pad
 --
---  Prev/Next are always in the layout - they are simply rendered in
+--  Prev/Next are always in the layout — they are simply rendered in
 --  the 'disabled' colour when the perk has only one description page.
 --  Dynamically adding/removing Elements from a layout destroys them
 --  in OpenMW's UI system, causing crashes on the next access.
@@ -1260,6 +1515,41 @@ local function redraw()
     -- Rebuild entry list for current tab/group state
     buildListEntries()
 
+    -- If the current selection is on a non-navigable entry (e.g. a header row
+    -- after a tab switch), silently advance to the first navigable entry so the
+    -- player never needs to press down twice just to see a perk detail.
+    -- Walk forward first; if nothing is found forward, try backward (handles
+    -- the edge case where the cursor is below all navigable entries).
+    if #currentListEntries > 0 then
+        local idx = perkList.selectedIndex
+        if not isEntryNavigable(idx, cachedTree) then
+            -- Try forward
+            local found = false
+            for i = idx + 1, #currentListEntries do
+                if isEntryNavigable(i, cachedTree) then
+                    perkList.selectedIndex = i
+                    found = true
+                    break
+                end
+            end
+            -- Fall back to searching backward
+            if not found then
+                for i = idx - 1, 1, -1 do
+                    if isEntryNavigable(i, cachedTree) then
+                        perkList.selectedIndex = i
+                        break
+                    end
+                end
+            end
+        end
+        -- Ensure the selected entry is within the visible scroll window
+        if perkList.selectedIndex < perkList.topIndex then
+            perkList.topIndex = perkList.selectedIndex
+        elseif perkList.selectedIndex > perkList.topIndex + perkList.displayCount - 1 then
+            perkList.topIndex = math.max(1, perkList.selectedIndex - perkList.displayCount + 1)
+        end
+    end
+
     -- Rebuild and update the tab bar, passing the tree for availability checks
     buildTabBar(tabNames, cachedTree)
 
@@ -1293,7 +1583,60 @@ local function redraw()
 end
 
 -- ============================================================
---  SHOW PERK UI
+--  LIGHT REDRAW
+--
+--  A cheap refresh used for cursor movement within an unchanged
+--  tab/group state (keyboard/controller up-down navigation,
+--  mouse wheel, description page changes).
+--
+--  Skips the expensive steps that full redraw() does:
+--    • buildCategoryTree()    — tree hasn't changed
+--    • buildListEntries()     — entry list hasn't changed
+--    • buildTabBar()          — tab bar hasn't changed
+--    • perkList:setTotal()    — total hasn't changed
+--
+--  Only updates:
+--    • perkList:update()      — re-renders visible rows with new highlight
+--    • perkDetailElement      — shows the newly selected perk's detail
+--    • haveThisPerk           — "you have this" notice
+--    • updatePickButtonElement() — Acquire/Prev/Next/cost line
+--    • menu:update()          — propagates changes to the root widget
+--
+--  Use full redraw() whenever the structure changes: tab switch,
+--  dropdown toggled, perk acquired, or UI first opened.
+-- ============================================================
+
+local function lightRedraw()
+    -- Re-render the list to update the highlighted row
+    perkList:update()
+
+    -- Update the detail panel for the current selection
+    local selectedPerk = getSelectedPerk()
+    if selectedPerk ~= nil then
+        perkDetailElement.layout = selectedPerk:detailLayout(selectedDescriptionText())
+        perkDetailElement:update()
+        haveThisPerk.layout.props.visible = hasPerk(getSelectedIndex())
+        haveThisPerk:update()
+    else
+        -- Selection is on a header or empty: clear the detail panel
+        perkDetailElement.layout = {
+            name = "detailLayout",
+            type = ui.TYPE.Flex,
+        }
+        perkDetailElement:update()
+        haveThisPerk.layout.props.visible = false
+        haveThisPerk:update()
+    end
+
+    updatePickButtonElement()
+
+    if menu ~= nil then
+        menu:update()
+    end
+end
+
+-- ============================================================
+--  FULL REDRAW
 -- ============================================================
 
 local debounce = 0
@@ -1380,107 +1723,124 @@ end
 
 local function onMouseWheel(direction)
     if menu == nil then return end
-    -- direction < 0 = wheel scrolled down - move cursor DOWN the list (index increases)
-    -- direction > 0 = wheel scrolled up   - move cursor UP the list   (index decreases)
-    -- list.scroll(step) does selectedIndex -= step, so negative step = index increase.
+    -- direction < 0 = wheel scrolled down → move cursor DOWN (higher index)
+    -- direction > 0 = wheel scrolled up   → move cursor UP   (lower index)
+    -- navigateList(+1) = down, navigateList(-1) = up
+    -- lightRedraw() is used here instead of redraw() because the entry list
+    -- and tab bar have not changed — only the highlighted row has moved.
     if direction < 0 then
-        perkList:scroll(-1)
+        navigateList(1, cachedTree)
     else
-        perkList:scroll(1)
+        navigateList(-1, cachedTree)
     end
-    redraw()
+    lightRedraw()
 end
 
 -- ---------------------------------------------------------------
--- Key-held status flags.
--- "Status" variables track whether the key was pressed last frame
--- so we can fire on press (with repeat debounce) or on release
--- (for actions that should fire once, like picking a perk).
+-- Key input state.
+--
+-- For keys that repeat while held (Up/Down list navigation,
+-- Left/Right tab navigation), each key tracks how many frames
+-- it has been held via a counter.  The first press fires
+-- immediately; held keys wait KEY_REPEAT_INITIAL frames before
+-- repeating, then fire every KEY_REPEAT_INTERVAL frames.
+-- This is completely independent of the global `debounce` counter
+-- so navigation never blocks other inputs (acquire, exit, etc.).
+--
+-- For keys that should fire exactly once per press (E, LB, RB,
+-- Enter, Escape), we use a boolean that is set on press and
+-- consumed on the following frame when the key is released.
 -- ---------------------------------------------------------------
 
--- Perk list vertical navigation (UpArrow / DownArrow, DPad Up/Down)
-local keyEnterStatus  = false
-local keyEscapeStatus = false
-local keyDownStatus   = false
-local keyUpStatus     = false
+-- Frames held before the first auto-repeat fires
+local KEY_REPEAT_INITIAL  = 20
+-- Frames between subsequent auto-repeats while held
+local KEY_REPEAT_INTERVAL = 6
 
--- Tab navigation (LeftArrow / RightArrow, DPad Left/Right)
--- Fires once on initial press, then again after LONG_DEBOUNCE frames if held.
-local keyTabLeftStatus  = false
-local keyTabRightStatus = false
+local keyDownHeld   = 0   -- frames DownArrow / DPad Down has been held
+local keyUpHeld     = 0   -- frames UpArrow   / DPad Up   has been held
+local keyLeftHeld   = 0   -- frames LeftArrow / DPad Left  has been held
+local keyRightHeld  = 0   -- frames RightArrow/ DPad Right has been held
 
--- Dropdown expand/collapse (E key, X controller button)
--- Fires on key RELEASE so a quick tap doesn't double-toggle.
+-- Fire-on-release booleans (set on press, consumed on release)
 local keyDropdownStatus = false
-
--- Description page navigation (Comma = prev, Period = next; LB / RB)
--- Fires on key RELEASE for deliberate single-step paging.
 local keyDescPrevStatus = false
 local keyDescNextStatus = false
+local keyEnterStatus    = false
+local keyEscapeStatus   = false
+
+-- Helper: returns true on the frame a held counter should fire.
+-- Fires immediately on frame 1, then again after INITIAL, then every INTERVAL.
+local function shouldRepeat(heldFrames)
+    if heldFrames == 1 then return true end
+    if heldFrames <= KEY_REPEAT_INITIAL then return false end
+    return (heldFrames - KEY_REPEAT_INITIAL) % KEY_REPEAT_INTERVAL == 0
+end
 
 -- How many extra frames to wait before accepting a held-key repeat
+-- (kept for the UI-open guard only)
 local LONG_DEBOUNCE = 5 * DEBOUNCE_FRAMES
 
 local function onFrame(dt)
     if menu == nil then return end
     myui.processButtonAction(dt)
 
+    -- Global debounce: only used on UI open to prevent accidental Enter
+    -- from the console triggering an immediate perk pick.
     if debounce > 0 then
         debounce = debounce - 1
         return
     end
 
     -- ---------------------------------------------------------------
-    -- List vertical navigation
-    -- DownArrow / DPad Down - move cursor DOWN (higher index)
-    -- UpArrow   / DPad Up   - move cursor UP   (lower index)
+    -- List vertical navigation  (Up/Down arrows, DPad Up/Down)
+    -- Uses per-key held counters for smooth auto-repeat.
+    -- lightRedraw() used here: structure is unchanged.
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.DownArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadDown) then
-        perkList:scroll(-1)  -- scroll(-1) increments selectedIndex - cursor moves DOWN
-        debounce = keyDownStatus and DEBOUNCE_FRAMES or LONG_DEBOUNCE
-        keyDownStatus = true
-        redraw()
+        keyDownHeld = keyDownHeld + 1
+        if shouldRepeat(keyDownHeld) then
+            navigateList(1, cachedTree)
+            lightRedraw()
+        end
     else
-        keyDownStatus = false
+        keyDownHeld = 0
     end
+
     if input.isKeyPressed(input.KEY.UpArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadUp) then
-        perkList:scroll(1)   -- scroll(1) decrements selectedIndex - cursor moves UP
-        debounce = keyUpStatus and DEBOUNCE_FRAMES or LONG_DEBOUNCE
-        keyUpStatus = true
-        redraw()
+        keyUpHeld = keyUpHeld + 1
+        if shouldRepeat(keyUpHeld) then
+            navigateList(-1, cachedTree)
+            lightRedraw()
+        end
     else
-        keyUpStatus = false
+        keyUpHeld = 0
     end
 
     -- ---------------------------------------------------------------
-    -- Tab navigation
-    -- LeftArrow / DPad Left  - previous tab
-    -- RightArrow / DPad Right - next tab
-    -- Fires once on initial press; held keys are debounced via LONG_DEBOUNCE.
+    -- Tab navigation  (Left/Right arrows, DPad Left/Right)
+    -- Same auto-repeat approach; full redraw because the entry list changes.
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.LeftArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadLeft) then
-        if not keyTabLeftStatus then
-            navigateTab(-1)
-            debounce = LONG_DEBOUNCE
+        keyLeftHeld = keyLeftHeld + 1
+        if shouldRepeat(keyLeftHeld) then
+            navigateTab(-1, cachedTree)
         end
-        keyTabLeftStatus = true
     else
-        keyTabLeftStatus = false
+        keyLeftHeld = 0
     end
 
     if input.isKeyPressed(input.KEY.RightArrow) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.DPadRight) then
-        if not keyTabRightStatus then
-            navigateTab(1)
-            debounce = LONG_DEBOUNCE
+        keyRightHeld = keyRightHeld + 1
+        if shouldRepeat(keyRightHeld) then
+            navigateTab(1, cachedTree)
         end
-        keyTabRightStatus = true
     else
-        keyTabRightStatus = false
+        keyRightHeld = 0
     end
 
     -- ---------------------------------------------------------------
-    -- Dropdown expand/collapse
-    -- E key / X controller button - toggle the selected header dropdown
+    -- Dropdown expand/collapse  (E key / X button)
     -- Fires on RELEASE so a single tap produces exactly one toggle.
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.E) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.X) then
@@ -1491,10 +1851,8 @@ local function onFrame(dt)
     end
 
     -- ---------------------------------------------------------------
-    -- Description page navigation
-    -- Comma (,) key / Left Shoulder (LB) - previous page
-    -- Period (.) key / Right Shoulder (RB) - next page
-    -- Fires on RELEASE so each press advances exactly one page.
+    -- Description page navigation  (Comma/Period, LB/RB)
+    -- Fires on RELEASE for deliberate single-step paging.
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.Comma) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.LeftShoulder) then
         keyDescPrevStatus = true
@@ -1511,8 +1869,8 @@ local function onFrame(dt)
     end
 
     -- ---------------------------------------------------------------
-    -- Acquire perk
-    -- Enter / A button - pick selected perk (fires on RELEASE)
+    -- Acquire perk  (Enter / A button)
+    -- Fires on RELEASE.
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.Enter) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.A) then
         keyEnterStatus = true
@@ -1529,7 +1887,7 @@ local function onFrame(dt)
 
     -- ---------------------------------------------------------------
     -- Exit
-    -- Escape / B button - close the UI (fires on RELEASE)
+    -- Escape / B button → close the UI (fires on RELEASE)
     -- ---------------------------------------------------------------
     if input.isKeyPressed(input.KEY.Escape) or input.isControllerButtonPressed(input.CONTROLLER_BUTTON.B) then
         keyEscapeStatus = true
@@ -1547,11 +1905,18 @@ local function onInternalRedraw()
     redraw()
 end
 
+-- Lightweight version of the above, used when only the detail panel and
+-- button states need refreshing (description page changes).
+local function onInternalLightRedraw()
+    lightRedraw()
+end
+
 return {
     eventHandlers = {
-        [MOD_NAME .. "showPerkUI"]      = showPerkUI,
-        [MOD_NAME .. "closePerkUI"]     = closeUI,
-        [MOD_NAME .. "_internalRedraw"] = onInternalRedraw,
+        [MOD_NAME .. "showPerkUI"]            = showPerkUI,
+        [MOD_NAME .. "closePerkUI"]           = closeUI,
+        [MOD_NAME .. "_internalRedraw"]       = onInternalRedraw,
+        [MOD_NAME .. "_internalLightRedraw"]  = onInternalLightRedraw,
     },
     engineHandlers = {
         onFrame      = onFrame,
