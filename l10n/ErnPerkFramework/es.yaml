@@ -6,6 +6,9 @@ modSettingsDesc: "Cambia cómo funciona el mod."
 perksPerLevelName: "Habilidades por Nivel"
 perksPerLevelDescription: "Cuántas habilidades se obtienen por nivel de personaje."
 
+showOnRestName: "Mostrar al Descansar"
+showOnRestDescription: "Muestra la ventana de selección de habilidades al descansar. Actívalo si usas NCGDMW, NCG u otra mejora de progresión basada en el descanso."
+
 disableName: "Desactivar Mod"
 disableDescription: "Desactiva todas las habilidades."
 

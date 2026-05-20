@@ -6,6 +6,9 @@ modSettingsDesc: "Измените, как работает мод."
 perksPerLevelName: "Очков умений за уровень"
 perksPerLevelDescription: "Сколько очков умений получать за уровень персонажа."
 
+showOnRestName: "Показывать после отдыха"
+showOnRestDescription: "Показывать окно выбора умений после отдыха. Включите, если используете NCGDMW, NCG или другую систему прокачки через отдых."
+
 disableName: "Отключить мод"
 disableDescription: "Отключить все умения."
 

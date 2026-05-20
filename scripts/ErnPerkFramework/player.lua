@@ -21,8 +21,6 @@ local log = require("scripts.ErnPerkFramework.log")
 local settings = require("scripts.ErnPerkFramework.settings")
 local UI = require('openmw.interfaces').UI
 
-settings.init()
-
 local function hasPerk(id)
     for _, foundID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
         if foundID == id then
@@ -212,13 +210,15 @@ local function UiModeChanged(data)
     if (data.newMode ~= nil) then
         return
     end
-    local hasNCGDMW = interfaces.NCGDMW ~= nil
     -- spawn perk UI after the levelup UI.
     if data.oldMode == 'LevelUp' then
         if shouldShowUI() then
             pself:sendEvent(settings.MOD_NAME .. "showPerkUI", {})
         end
-    elseif hasNCGDMW and data.oldMode == 'Rest' then
+    elseif settings.showOnRest and data.oldMode == 'Rest' then
+        -- showOnRest is true by default when NCGDMW or NCG is detected (see settings.lua).
+        -- It can also be toggled manually in the mod options for any other rest-based
+        -- levelling overhaul.
         if shouldShowUI() then
             pself:sendEvent(settings.MOD_NAME .. "showPerkUI", {})
         end

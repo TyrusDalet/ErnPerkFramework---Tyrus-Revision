@@ -8,6 +8,9 @@ modSettingsDesc: "Change how the mod works."
 perksPerLevelName: "Perks Per Level"
 perksPerLevelDescription: "How many perks to gain per character level."
 
+showOnRestName: "Show After Rest"
+showOnRestDescription: "Show the perk selection window after resting. Enable this if you use NCGDMW, NCG, or another rest-based levelling overhaul."
+
 disableName: "Disable Mod"
 disableDescription: "Disable all perks."
 

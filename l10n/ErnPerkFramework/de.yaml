@@ -6,6 +6,9 @@ modSettingsDesc: "Ändere, wie die Mod funktioniert."
 perksPerLevelName: "Vorteile pro Stufe"
 perksPerLevelDescription: "Wie viele Vorteile pro Charakterstufe erhalten werden."
 
+showOnRestName: "Nach dem Rasten anzeigen"
+showOnRestDescription: "Zeige das Vorteils-Auswahlfenster nach dem Rasten. Aktiviere dies, wenn du NCGDMW, NCG oder ein ähnliches Stufensystem verwendest."
+
 disableName: "Mod Deaktivieren"
 disableDescription: "Alle Vorteile deaktivieren."
 

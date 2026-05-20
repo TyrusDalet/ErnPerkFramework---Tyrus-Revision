@@ -44,6 +44,16 @@ local function init()
                     max = 5,
                 }
             },
+            -- Show the perk selection window after resting.
+            -- Defaults to true if NCGDMW or NCG is detected, so users of either
+            -- levelling overhaul get the expected behaviour without manual configuration.
+            {
+                key = "showOnRest",
+                name = "showOnRestName",
+                description = "showOnRestDescription",
+                default = (interfaces.NCGDMW ~= nil) or (interfaces.NCG ~= nil),
+                renderer = "checkbox",
+            },
             {
                 key = "disable",
                 name = "disableName",
