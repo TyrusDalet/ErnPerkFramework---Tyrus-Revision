@@ -21,6 +21,8 @@ local log = require("scripts.ErnPerkFramework.log")
 local settings = require("scripts.ErnPerkFramework.settings")
 local UI = require('openmw.interfaces').UI
 
+settings.init()
+
 local function hasPerk(id)
     for _, foundID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
         if foundID == id then
