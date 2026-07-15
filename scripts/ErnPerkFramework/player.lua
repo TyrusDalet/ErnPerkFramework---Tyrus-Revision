@@ -1,6 +1,7 @@
 --[[
 ErnPerkFramework for OpenMW.
 Copyright (C) 2025 Erin Pentecost
+2026 Robbie Barker
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -24,20 +25,13 @@ local UI = require('openmw.interfaces').UI
 settings.init()
 
 local function hasPerk(id)
-    for _, foundID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
-        if foundID == id then
-            return true
-        end
-    end
-    return false
+    return interfaces.ErnPerkFramework.playerHasPerk(id)
 end
 
 local function shouldShowUI()
-    local remainingPoints = interfaces.ErnPerkFramework.totalAllowedPoints() -
-        interfaces.ErnPerkFramework.currentSpentPoints()
     -- now we have to see if there is at least one perk that we could buy
     for id, perk in pairs(interfaces.ErnPerkFramework.getPerks()) do
-        if (not hasPerk(id)) and perk:evaluateRequirements().satisfied and perk:cost() <= remainingPoints then
+        if (not hasPerk(id)) and perk:evaluateRequirements().satisfied and interfaces.ErnPerkFramework.canAffordPerk(perk) then
             return true
         end
     end
@@ -48,11 +42,13 @@ local function syncPerks()
     log(nil, "syncPerks() started.")
     -- keep calling this until the number of perks stops going down.
     -- this handles perks that require other perks to exist.
-    local snapshot = interfaces.ErnPerkFramework.getPlayerPerks()
+    local snapshot = {}
+    for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
+        table.insert(snapshot, perkID)
+    end
     local currentCount = #snapshot
-    local allowedPoints = interfaces.ErnPerkFramework.totalAllowedPoints()
     for i = 1, 1000 do
-        local currentPerksTotalCost = 0
+        local currentPerksTotalCost = {}
         local filteredPerks = {}
         -- iterate from oldest to newest.
         for _, perkID in ipairs(snapshot) do
@@ -61,11 +57,14 @@ local function syncPerks()
                 -- Maybe don't do this, so late-registering providers aren't deleted.
                 log(nil, "Removing perk " .. perkID .. ", missing.")
             elseif foundPerk:evaluateRequirements().satisfied then
-                if currentPerksTotalCost + foundPerk:cost() > allowedPoints then
+                local resourceID = interfaces.ErnPerkFramework.getPerkCostResource(foundPerk)
+                currentPerksTotalCost[resourceID] = currentPerksTotalCost[resourceID] or 0
+                if currentPerksTotalCost[resourceID] + foundPerk:cost() >
+                    interfaces.ErnPerkFramework.totalAllowedPoints(resourceID) then
                     log(nil, "Removing perk " .. perkID .. ", not enough points.")
                     foundPerk:onRemove()
                 else
-                    currentPerksTotalCost = currentPerksTotalCost + foundPerk:cost()
+                    currentPerksTotalCost[resourceID] = currentPerksTotalCost[resourceID] + foundPerk:cost()
                     table.insert(filteredPerks, perkID)
                 end
             else
@@ -87,7 +86,9 @@ local function syncPerks()
     for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
         log(nil, "Adding perk " .. perkID .. "!")
         local foundPerk = interfaces.ErnPerkFramework.getPerks()[perkID]
-        foundPerk:onAdd()
+        if foundPerk then
+            foundPerk:onAdd()
+        end
     end
     log(nil, "syncPerks() ended.")
 end
@@ -136,9 +137,11 @@ local function addPerk(data)
         return
     end
     if foundPerk:evaluateRequirements().satisfied then
-        local totalAllowed = interfaces.ErnPerkFramework.totalAllowedPoints()
-        if interfaces.ErnPerkFramework.currentSpentPoints() + foundPerk:cost() <= totalAllowed then
-            local activePerksByID = interfaces.ErnPerkFramework.getPlayerPerks()
+        if interfaces.ErnPerkFramework.canAffordPerk(foundPerk) then
+            local activePerksByID = {}
+            for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
+                table.insert(activePerksByID, perkID)
+            end
             table.insert(activePerksByID, data.perkID)
             interfaces.ErnPerkFramework._setPlayerPerks(activePerksByID)
             foundPerk:onAdd()
@@ -163,7 +166,10 @@ local function removePerk(data)
         error("removePerk(" .. tostring(data.perkID) .. ") called with bad perkID.")
         return
     end
-    local activePerksByID = interfaces.ErnPerkFramework.getPlayerPerks()
+    local activePerksByID = {}
+    for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
+        table.insert(activePerksByID, perkID)
+    end
     for i, p in ipairs(activePerksByID) do
         if p == data.perkID then
             table.remove(activePerksByID, i)
@@ -182,16 +188,33 @@ local function splitString(str)
     return out
 end
 
+--- Normalizes player-entered console commands before matching.
+--- Some OpenMW console paths deliver commands with a trailing "\" marker;
+--- strip it so `luaperks menu\` behaves exactly like `luaperks menu`.
+--- @param command string|nil Raw console command.
+--- @return string command Trimmed and whitespace-normalized command.
+local function normalizeConsoleCommand(command)
+    command = tostring(command or "")
+    command = command:match("^%s*(.-)%s*$")
+    command = command:gsub("%s*\\+$", "")
+    command = command:match("^%s*(.-)%s*$")
+    return command:gsub("%s+", " ")
+end
+
 local function onConsoleCommand(mode, command, selectedObject)
+    command = normalizeConsoleCommand(command)
     local function getSuffixForCmd(prefix)
-        if string.sub(command:lower(), 1, string.len(prefix)) == prefix then
-            return string.sub(command, string.len(prefix) + 1)
-        else
-            return nil
+        local lower = command:lower()
+        if lower == prefix then
+            return ""
         end
+        if lower:sub(1, #prefix + 1) == prefix .. " " then
+            return command:sub(#prefix + 2)
+        end
+        return nil
     end
-    local show = getSuffixForCmd("lua perks")
-    local respec = getSuffixForCmd("lua perkrespec")
+    local show = getSuffixForCmd("luaperks menu")
+    local respec = command:lower() == "luaperks respec"
 
     if show ~= nil then
         print("Perk Show Menu: " .. tostring(show))
@@ -201,8 +224,9 @@ local function onConsoleCommand(mode, command, selectedObject)
         end
         pself:sendEvent(settings.MOD_NAME .. "showPerkUI",
             { visiblePerks = visible })
-    elseif respec ~= nil then
+    elseif respec then
         print("Perk Respec")
+        syncCoroutine = nil
         interfaces.ErnPerkFramework.respecPerks()
         remainingDT = 0
     end

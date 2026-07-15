@@ -11,6 +11,9 @@ perksPerLevelDescription: "How many perks to gain per character level."
 showOnRestName: "Show After Rest"
 showOnRestDescription: "Show the perk selection window after resting. Enable this if you use NCGDMW, NCG, or another rest-based levelling overhaul."
 
+allowCustomPerkAcquisitionMethodsName: "Allow Custom Perk Acquisition Methods"
+allowCustomPerkAcquisitionMethodsDescription: "Allow perk packs to define their own perk point resources instead of using only generic level-based perk points."
+
 disableName: "Disable Mod"
 disableDescription: "Disable all perks."
 

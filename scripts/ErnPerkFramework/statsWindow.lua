@@ -1,6 +1,7 @@
 --[[
 ErnPerkFramework for OpenMW.
 Copyright (C) 2025 Erin Pentecost
+2026 Robbie Barker
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as

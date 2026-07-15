@@ -156,7 +156,7 @@ interfaces.ErnPerkFramework.registerPerk({
     cost = 0,
     hidden = true,
     localizedDescription =
-    "This perk is not normally visible in the UI. This can be shown if you do this console command: `lua perks ErnExamplePerkPack_dummy_hidden`",
+    "This perk is not normally visible in the UI. This can be shown if you do this console command: `luaperks menu ErnExamplePerkPack_dummy_hidden`",
     onAdd = function()
         local logLine = "Hidden perk added!"
         ui.showMessage(logLine, {})
