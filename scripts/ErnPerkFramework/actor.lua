@@ -7,7 +7,7 @@ to NPC and creature scripts so perk mods can register shared pipelines without
 each mod installing separate engine handlers.
 ]]
 
-local MOD_NAME = require("scripts.ErnPerkFramework.settings").MOD_NAME
+local MOD_NAME = require("scripts.ErnPerkFramework.ns")
 local combat = require("scripts.ErnPerkFramework.combat")
 local calculation = require("scripts.ErnPerkFramework.calculation")
 

@@ -699,7 +699,7 @@ end
 --
 --  Defined here, after perkAvailable(), so they can call it.
 --  Used to decide whether tabs and group headers should be
---  greyed out and non-interactive.
+--  shown as purchasable, readable, or inactive.
 --
 --  groupHasAvailablePerk(tree, modName, typeName, groupName)
 --    Returns true if at least one perk in the specific group
@@ -733,6 +733,36 @@ local function tabHasAvailablePerk(tree, typeName)
     for sectionName, groups in pairs(typesByName) do
         for groupName, _ in pairs(groups) do
             if groupHasAvailablePerk(tree, typeName, sectionName, groupName) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function groupHasVisiblePerk(tree, modName, typeName, groupName)
+    local typesByName = tree[modName]
+    if not typesByName then return false end
+    local groups = typesByName[typeName]
+    if not groups then return false end
+    local ids = groups[groupName]
+    if not ids then return false end
+    for _, id in ipairs(ids) do
+        local perkObj = interfaces.ErnPerkFramework.getPerks()[id]
+        if perkObj and (perkObj:active() or justPickedPerks[id] or (not perkObj:hidden())) then
+            return true
+        end
+    end
+    return false
+end
+
+local function tabHasVisiblePerk(tree, typeName)
+    if typeName == TAB_ALL then return true end
+    local typesByName = tree[typeName]
+    if not typesByName then return false end
+    for sectionName, groups in pairs(typesByName) do
+        for groupName, _ in pairs(groups) do
+            if groupHasVisiblePerk(tree, typeName, sectionName, groupName) then
                 return true
             end
         end
@@ -806,9 +836,7 @@ end
 --  TAB BAR UI
 --
 --  A horizontal row of text buttons, one per tab name.
---  The active tab is highlighted. Clicking a tab sets
---  A horizontal row of text buttons, one per tab name.
---  The active tab is highlighted. Tabs with no acquirable perks
+--  The active tab is highlighted. Tabs with no visible perks
 --  are greyed and non-interactive. Clicking a live tab sets
 --  activeTabType, collapses all expandedGroups, resets list
 --  selection, and triggers a redraw via the internal event.
@@ -865,6 +893,7 @@ local function buildTabBar(tabNames, tree)
         local tabName   = tabNames[i]
         local isActive  = (tabName == activeTabType)
         local hasAvail  = tabHasAvailablePerk(tree, tabName)
+        local hasVisible = tabHasVisiblePerk(tree, tabName)
         local allDone   = tabAllObtained(tree, tabName)
 
         -- Colour priority:
@@ -875,7 +904,7 @@ local function buildTabBar(tabNames, tree)
         local btn = ui.create {}
         local capturedTab = tabName
         local clickFn
-        if hasAvail and not isActive then
+        if hasVisible and not isActive then
             clickFn = function()
                 activeTabType  = capturedTab
                 expandedGroups = {}
@@ -899,6 +928,8 @@ local function buildTabBar(tabNames, tree)
             if isActive then
                 color = 'active'
             elseif hasAvail then
+                color = 'normal'
+            elseif hasVisible then
                 color = 'normal'
             else
                 color = 'disabled'
@@ -1011,6 +1042,7 @@ local function renderListEntry(idx, isSelected, tree)
         -- Check whether this group has any acquirable perks, and whether
         -- all its perks are already obtained, for colour selection.
         local hasAvail   = groupHasAvailablePerk(tree, activeTabType, entry.type, entry.group)
+        local hasVisible = groupHasVisiblePerk(tree, activeTabType, entry.type, entry.group)
         local allDone    = groupAllObtained(tree, activeTabType, entry.type, entry.group)
         local isExpanded = expandedGroups[entry.key] == true
         local arrow      = isExpanded and "v " or "> "
@@ -1019,9 +1051,9 @@ local function renderListEntry(idx, isSelected, tree)
         local capturedGroup = entry.type .. "_" .. entry.group
 
         local clickFn
-        if hasAvail or allDone then
-            -- Allow expanding even when all perks are obtained, so the player
-            -- can still view the perks they have.
+        if hasVisible then
+            -- Allow expanding whenever the group has visible perks, even when
+            -- none are currently buyable, so owned perks remain readable.
             clickFn = function()
                 if expandedGroups[capturedKey] then
                     expandedGroups[capturedKey] = nil
@@ -1051,7 +1083,7 @@ local function renderListEntry(idx, isSelected, tree)
                 clickFn,
                 {})
         else
-            local color = hasAvail and 'normal' or 'disabled'
+            local color = (hasAvail or hasVisible) and 'normal' or 'disabled'
             btn.layout = myui.createTextButtonBorderless(
                 btn,
                 label,
@@ -1157,14 +1189,14 @@ end
 --
 --  navigateTab(delta) moves the active tab by delta (+1 = right, -1 = left),
 --  wrapping around at the ends.  It uses cachedTabNames so no tree rebuild
---  is needed per-frame.  Only tabs with available perks (or TAB_ALL) are
---  considered, matching the clickable-tab logic in buildTabBar.
+--  is needed per-frame.  Any tab with visible perks is considered, matching
+--  the clickable-tab logic in buildTabBar.
 -- ============================================================
 
 -- navigateTab(delta, tree) moves the active tab by delta (+1 = right, -1 = left),
 -- wrapping around at the ends.  tree is passed explicitly because cachedTree is
 -- declared later in the file and would be nil if captured as an upvalue here.
--- Only tabs with available perks (or TAB_ALL) are reachable, matching the
+-- Only tabs with visible perks (or TAB_ALL) are reachable, matching the
 -- clickable-tab logic in buildTabBar.
 local function navigateTab(delta, tree)
     if #cachedTabNames == 0 then return end
@@ -1184,7 +1216,7 @@ local function navigateTab(delta, tree)
     for _ = 1, count do
         currentIdx = ((currentIdx - 1 + delta) % count) + 1
         local candidate = cachedTabNames[currentIdx]
-        if candidate == TAB_ALL or tabHasAvailablePerk(tree, candidate) then
+        if candidate == TAB_ALL or tabHasVisiblePerk(tree, candidate) then
             activeTabType  = candidate
             expandedGroups = {}
             if perkList then perkList.selectedIndex = 1 end
@@ -1222,13 +1254,12 @@ local function isEntryNavigable(idx, tree)
         return false
     end
     if entry.kind == "header" then
-        -- Navigable if the group has acquirable perks or is fully obtained.
+        -- Navigable if the group has anything visible to inspect.
         -- tree is passed explicitly because cachedTree is declared after this
         -- function in the file; Lua locals are only visible from their
         -- declaration point onward, so capturing cachedTree as an upvalue
         -- here would always read nil.
-        return groupHasAvailablePerk(tree, activeTabType, entry.type, entry.group)
-            or groupAllObtained(tree, activeTabType, entry.type, entry.group)
+        return groupHasVisiblePerk(tree, activeTabType, entry.type, entry.group)
     else
         -- Navigable if the perk is obtained or requirements are currently met
         return hasPerk(idx) or satisfied(entry.id)
@@ -1771,25 +1802,6 @@ local function showPerkUI(data)
         expandedGroups = {}
     else
         visiblePerks = nil
-    end
-
-    -- Check availability against ALL perks regardless of the active tab.
-    -- This ensures the UI opens even if the currently selected tab has no
-    -- available perks (e.g. all Faction perks are locked but a Trait perk is free).
-    if visiblePerks == nil then
-        local aPerkIsAvailable = false
-        local allPerks = interfaces.ErnPerkFramework.getPerks()
-        for _, id in ipairs(interfaces.ErnPerkFramework.getPerkIDs()) do
-            local perkObj = allPerks[id]
-            if not perkObj:hidden() and perkAvailable(id) then
-                aPerkIsAvailable = true
-                break
-            end
-        end
-        if not aPerkIsAvailable then
-            log(nil, "No available perks found.")
-            return
-        end
     end
 
     if menu == nil then
