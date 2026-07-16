@@ -1,6 +1,7 @@
 --[[
 ErnPerkFramework for OpenMW.
 Copyright (C) 2025 Erin Pentecost
+2026 Robbie Barker
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -204,14 +205,86 @@ local function hasPerk(...)
             return orList(perkNames)
         end,
         check = function()
-            for _, foundPerk in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
-                for _, checkPerk in ipairs(args) do
-                    if checkPerk == foundPerk then
+            for _, checkPerk in ipairs(args) do
+                if interfaces.ErnPerkFramework.playerHasPerk(checkPerk) then
+                    return true
+                end
+            end
+            return false
+        end
+    }
+end
+
+--- Creates a requirement that is met if any of the specified perk IDs are registered.
+--- This checks installed/loaded perk capability, not whether the player owns the perk.
+--- @param ... string One or more perk IDs.
+--- @return table The requirement data table.
+local function registeredPerk(...)
+    local args = { select(1, ...) }
+    return {
+        id = builtin .. 'registeredPerk',
+        localizedName = function()
+            local perkNames = {}
+            for _, id in ipairs(args) do
+                local perk = interfaces.ErnPerkFramework.getPerk(id)
+                table.insert(perkNames, perk and perk:name() or id)
+            end
+            return orList(perkNames)
+        end,
+        check = function()
+            for _, id in ipairs(args) do
+                if interfaces.ErnPerkFramework.isPerkRegistered(id) then
+                    return true
+                end
+            end
+            return false
+        end
+    }
+end
+
+--- Creates an optional cross-mod perk requirement.
+--- If none of the perk IDs are registered, the requirement is satisfied.
+--- If any are registered, the player must own at least one registered perk ID.
+--- Use this when a perk should gain an extra prerequisite only when another
+--- perk mod is installed.
+--- @param ... string One or more perk IDs.
+--- @return table The requirement data table.
+local function hasPerkIfRegistered(...)
+    local args = { select(1, ...) }
+    return {
+        id = builtin .. 'optionalPerk',
+        localizedName = function()
+            local perkNames = {}
+            for _, id in ipairs(args) do
+                local perk = interfaces.ErnPerkFramework.getPerk(id)
+                if perk then
+                    table.insert(perkNames, perk:name())
+                end
+            end
+            if #perkNames == 0 then
+                return ""
+            end
+            return orList(perkNames)
+        end,
+        check = function()
+            local hasRegisteredCandidate = false
+            for _, id in ipairs(args) do
+                if interfaces.ErnPerkFramework.isPerkRegistered(id) then
+                    hasRegisteredCandidate = true
+                    if interfaces.ErnPerkFramework.playerHasPerk(id) then
                         return true
                     end
                 end
             end
-            return false
+            return not hasRegisteredCandidate
+        end,
+        omit = function()
+            for _, id in ipairs(args) do
+                if interfaces.ErnPerkFramework.isPerkRegistered(id) then
+                    return false
+                end
+            end
+            return true
         end
     }
 end
@@ -390,6 +463,8 @@ return {
     werewolf = werewolf,
     race = race,
     hasPerk = hasPerk,
+    registeredPerk = registeredPerk,
+    hasPerkIfRegistered = hasPerkIfRegistered,
     orGroup = orGroup,
     andGroup = andGroup,
     invert = invert,

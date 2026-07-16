@@ -335,6 +335,18 @@ function PerkFunctions.cost(self)
     return math.floor(cost)
 end
 
+--- Gets the resource spent to acquire this perk.
+--- Defaults to generic framework perk points.
+--- @param self table The perk object.
+--- @return string resourceID Perk resource id.
+function PerkFunctions.costResource(self)
+    local resourceID = interfaces.ErnPerkFramework.GENERIC_RESOURCE_ID
+    if self.record.costResource ~= nil then
+        resourceID = resolve(self.record.costResource)
+    end
+    return resourceID
+end
+
 --- Determines if the perk should normally appear in the perk window or not.
 --- Defaults to false.
 --- If `hidden` in the record is a function, it's called to get the cost.
@@ -401,13 +413,7 @@ end
 -- Returns true if the player currently has the perk.
 --- @return boolean Whether the player has the perk.
 function PerkFunctions.active(self)
-    -- TODO: maybe cache this
-    for _, foundID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
-        if foundID == self:id() then
-            return true
-        end
-    end
-    return false
+    return interfaces.ErnPerkFramework.playerHasPerk(self:id())
 end
 
 --- Evaluates all requirements for the perk.
@@ -419,17 +425,19 @@ function PerkFunctions.evaluateRequirements(self)
     local reqs = {}
     local allMet = true
     for i, r in ipairs(self.record.requirements) do
-        local satisfied = r.check()
-        if not satisfied then
-            allMet = false
-        end
-        local name = r.id
-        if r.localizedName ~= nil then
-            name = resolve(r.localizedName)
-        end
-        local hide = resolve(r.hidden)
+        if not resolve(r.omit) then
+            local satisfied = r.check()
+            if not satisfied then
+                allMet = false
+            end
+            local name = r.id
+            if r.localizedName ~= nil then
+                name = resolve(r.localizedName)
+            end
+            local hide = resolve(r.hidden)
 
-        table.insert(reqs, { id = r.id, name = name, satisfied = satisfied, hidden = (hide and (not satisfied)) })
+            table.insert(reqs, { id = r.id, name = name, satisfied = satisfied, hidden = (hide and (not satisfied)) })
+        end
     end
 
     -- sort reqs by name

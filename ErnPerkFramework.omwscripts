@@ -3,3 +3,6 @@ PLAYER:scripts/ErnPerkFramework/manifest.lua
 PLAYER:scripts/ErnPerkFramework/player.lua
 PLAYER:scripts/ErnPerkFramework/perkpage.lua
 PLAYER:scripts/ErnPerkFramework/statsWindow.lua
+NPC:scripts/ErnPerkFramework/actor.lua
+CREATURE:scripts/ErnPerkFramework/actor.lua
+CUSTOM:scripts/ErnPerkFramework/resource_actor.lua

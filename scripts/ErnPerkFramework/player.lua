@@ -1,6 +1,7 @@
 --[[
 ErnPerkFramework for OpenMW.
 Copyright (C) 2025 Erin Pentecost
+2026 Robbie Barker
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -24,53 +25,78 @@ local UI = require('openmw.interfaces').UI
 settings.init()
 
 local function hasPerk(id)
-    for _, foundID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
-        if foundID == id then
+    return interfaces.ErnPerkFramework.playerHasPerk(id)
+end
+
+local function shouldShowUI()
+    -- now we have to see if there is at least one perk that we could buy
+    for id, perk in pairs(interfaces.ErnPerkFramework.getPerks()) do
+        if (not hasPerk(id)) and perk:evaluateRequirements().satisfied and interfaces.ErnPerkFramework.canAffordPerk(perk) then
             return true
         end
     end
     return false
 end
 
-local function shouldShowUI()
-    local remainingPoints = interfaces.ErnPerkFramework.totalAllowedPoints() -
-        interfaces.ErnPerkFramework.currentSpentPoints()
-    -- now we have to see if there is at least one perk that we could buy
-    for id, perk in pairs(interfaces.ErnPerkFramework.getPerks()) do
-        if (not hasPerk(id)) and perk:evaluateRequirements().satisfied and perk:cost() <= remainingPoints then
-            return true
+local pendingInitialReapply = {}
+local observedOwnedPerks = {}
+
+local function observeOwnedPerks(snapshot)
+    for _, perkID in ipairs(snapshot) do
+        if not observedOwnedPerks[perkID] then
+            observedOwnedPerks[perkID] = true
+            pendingInitialReapply[perkID] = true
         end
     end
-    return false
+end
+
+local function forgetOwnedPerk(perkID)
+    observedOwnedPerks[perkID] = nil
+    pendingInitialReapply[perkID] = nil
 end
 
 local function syncPerks()
     log(nil, "syncPerks() started.")
-    -- keep calling this until the number of perks stops going down.
-    -- this handles perks that require other perks to exist.
-    local snapshot = interfaces.ErnPerkFramework.getPlayerPerks()
+    -- Keep pruning until the number of perks stops going down. This handles
+    -- dependency chains where removing one perk can invalidate another.
+    --
+    -- Missing perk IDs are preserved. With multiple perk mods/cores, sync can
+    -- run before every provider has registered its perks; deleting those IDs
+    -- would turn a temporary load-order gap into permanent save data loss.
+    local snapshot = {}
+    for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
+        table.insert(snapshot, perkID)
+    end
+    observeOwnedPerks(snapshot)
     local currentCount = #snapshot
-    local allowedPoints = interfaces.ErnPerkFramework.totalAllowedPoints()
+    local removedAny = false
     for i = 1, 1000 do
-        local currentPerksTotalCost = 0
+        local currentPerksTotalCost = {}
         local filteredPerks = {}
         -- iterate from oldest to newest.
         for _, perkID in ipairs(snapshot) do
             local foundPerk = interfaces.ErnPerkFramework.getPerks()[perkID]
             if (foundPerk == nil) then
-                -- Maybe don't do this, so late-registering providers aren't deleted.
-                log(nil, "Removing perk " .. perkID .. ", missing.")
+                log(nil, "Preserving perk " .. perkID .. ", not registered yet.")
+                table.insert(filteredPerks, perkID)
             elseif foundPerk:evaluateRequirements().satisfied then
-                if currentPerksTotalCost + foundPerk:cost() > allowedPoints then
+                local resourceID = interfaces.ErnPerkFramework.getPerkCostResource(foundPerk)
+                currentPerksTotalCost[resourceID] = currentPerksTotalCost[resourceID] or 0
+                if currentPerksTotalCost[resourceID] + foundPerk:cost() >
+                    interfaces.ErnPerkFramework.totalAllowedPoints(resourceID) then
                     log(nil, "Removing perk " .. perkID .. ", not enough points.")
                     foundPerk:onRemove()
+                    forgetOwnedPerk(perkID)
+                    removedAny = true
                 else
-                    currentPerksTotalCost = currentPerksTotalCost + foundPerk:cost()
+                    currentPerksTotalCost[resourceID] = currentPerksTotalCost[resourceID] + foundPerk:cost()
                     table.insert(filteredPerks, perkID)
                 end
             else
                 log(nil, "Removing perk " .. perkID .. ", don't meet requirements.")
                 foundPerk:onRemove()
+                forgetOwnedPerk(perkID)
+                removedAny = true
             end
             coroutine.yield()
         end
@@ -82,24 +108,46 @@ local function syncPerks()
         end
         currentCount = #snapshot
     end
-    -- now that we're done removing them, apply them.
-    interfaces.ErnPerkFramework._setPlayerPerks(snapshot)
-    for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
-        log(nil, "Adding perk " .. perkID .. "!")
-        local foundPerk = interfaces.ErnPerkFramework.getPerks()[perkID]
-        foundPerk:onAdd()
+
+    if removedAny then
+        -- Now that removals are done, rewrite the owned list.
+        interfaces.ErnPerkFramework._setPlayerPerks(snapshot)
     end
+
+    -- Re-apply registered perks every sync pass. Many perk mods use onAdd as
+    -- their reconciliation hook for travel/cell-change state, so sync must stay
+    -- periodic. Successful reapply is intentionally quiet to avoid log spam.
+    for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
+        local foundPerk = interfaces.ErnPerkFramework.getPerks()[perkID]
+        if foundPerk then
+            foundPerk:onAdd()
+            observedOwnedPerks[perkID] = true
+            pendingInitialReapply[perkID] = nil
+        elseif pendingInitialReapply[perkID] then
+            log(nil, "Deferring reapply for perk " .. perkID .. ", not registered yet.")
+        end
+    end
+
     log(nil, "syncPerks() ended.")
 end
 
+local SYNC_STEPS_PER_TICK = 128
 local syncCoroutine = nil
 local function processSync()
     if syncCoroutine == nil then
         syncCoroutine = coroutine.create(syncPerks)
     end
-    local ok = coroutine.resume(syncCoroutine)
-    if not ok then
-        syncCoroutine = nil
+    for i = 1, SYNC_STEPS_PER_TICK do
+        local ok, err = coroutine.resume(syncCoroutine)
+        if not ok then
+            print("syncPerks() failed: " .. tostring(err))
+            syncCoroutine = nil
+            return
+        end
+        if coroutine.status(syncCoroutine) == "dead" then
+            syncCoroutine = nil
+            return
+        end
     end
 end
 
@@ -107,6 +155,15 @@ local remainingDT = 0
 local function onUpdate(dt)
     -- don't do anything if we are in the UI.
     if UI.getMode() ~= nil and UI.getMode() ~= "" then
+        return
+    end
+
+    -- Once a sync has started, keep advancing it in small batches each frame
+    -- instead of waiting for the normal periodic timer between coroutine
+    -- resumes. This keeps reload/load reconciliation responsive without
+    -- turning every ordinary frame into a full sync pass.
+    if syncCoroutine ~= nil then
+        processSync()
         return
     end
 
@@ -136,12 +193,16 @@ local function addPerk(data)
         return
     end
     if foundPerk:evaluateRequirements().satisfied then
-        local totalAllowed = interfaces.ErnPerkFramework.totalAllowedPoints()
-        if interfaces.ErnPerkFramework.currentSpentPoints() + foundPerk:cost() <= totalAllowed then
-            local activePerksByID = interfaces.ErnPerkFramework.getPlayerPerks()
+        if interfaces.ErnPerkFramework.canAffordPerk(foundPerk) then
+            local activePerksByID = {}
+            for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
+                table.insert(activePerksByID, perkID)
+            end
             table.insert(activePerksByID, data.perkID)
             interfaces.ErnPerkFramework._setPlayerPerks(activePerksByID)
             foundPerk:onAdd()
+            observedOwnedPerks[data.perkID] = true
+            pendingInitialReapply[data.perkID] = nil
         else
             log(nil,
                 "Perk " ..
@@ -163,7 +224,10 @@ local function removePerk(data)
         error("removePerk(" .. tostring(data.perkID) .. ") called with bad perkID.")
         return
     end
-    local activePerksByID = interfaces.ErnPerkFramework.getPlayerPerks()
+    local activePerksByID = {}
+    for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
+        table.insert(activePerksByID, perkID)
+    end
     for i, p in ipairs(activePerksByID) do
         if p == data.perkID then
             table.remove(activePerksByID, i)
@@ -172,6 +236,7 @@ local function removePerk(data)
     end
     interfaces.ErnPerkFramework._setPlayerPerks(activePerksByID)
     foundPerk:onRemove()
+    forgetOwnedPerk(data.perkID)
 end
 
 local function splitString(str)
@@ -182,16 +247,64 @@ local function splitString(str)
     return out
 end
 
-local function onConsoleCommand(mode, command, selectedObject)
-    local function getSuffixForCmd(prefix)
-        if string.sub(command:lower(), 1, string.len(prefix)) == prefix then
-            return string.sub(command, string.len(prefix) + 1)
+local function dumpPlayerPerks()
+    print("PerkFramework owned perks:")
+    local playerPerks = interfaces.ErnPerkFramework.getPlayerPerks()
+    if #playerPerks == 0 then
+        print("  none")
+        return
+    end
+
+    for i, perkID in ipairs(playerPerks) do
+        local foundPerk = interfaces.ErnPerkFramework.getPerks()[perkID]
+        if foundPerk == nil then
+            print("  " .. tostring(i) .. ". " .. tostring(perkID) .. " registered=false")
         else
-            return nil
+            local ok, req = pcall(function()
+                return foundPerk:evaluateRequirements()
+            end)
+            local reqText = "error"
+            if ok and req ~= nil then
+                reqText = tostring(req.satisfied)
+            end
+            local resourceID = interfaces.ErnPerkFramework.getPerkCostResource(foundPerk)
+            print("  " .. tostring(i) .. ". " .. tostring(perkID)
+                .. " registered=true"
+                .. " requirements=" .. reqText
+                .. " cost=" .. tostring(foundPerk:cost())
+                .. " resource=" .. tostring(resourceID))
         end
     end
-    local show = getSuffixForCmd("lua perks")
-    local respec = getSuffixForCmd("lua perkrespec")
+end
+
+--- Normalizes player-entered console commands before matching.
+--- Some OpenMW console paths deliver commands with a trailing "\" marker;
+--- strip it so `luaperks menu\` behaves exactly like `luaperks menu`.
+--- @param command string|nil Raw console command.
+--- @return string command Trimmed and whitespace-normalized command.
+local function normalizeConsoleCommand(command)
+    command = tostring(command or "")
+    command = command:match("^%s*(.-)%s*$")
+    command = command:gsub("%s*\\+$", "")
+    command = command:match("^%s*(.-)%s*$")
+    return command:gsub("%s+", " ")
+end
+
+local function onConsoleCommand(mode, command, selectedObject)
+    command = normalizeConsoleCommand(command)
+    local function getSuffixForCmd(prefix)
+        local lower = command:lower()
+        if lower == prefix then
+            return ""
+        end
+        if lower:sub(1, #prefix + 1) == prefix .. " " then
+            return command:sub(#prefix + 2)
+        end
+        return nil
+    end
+    local show = getSuffixForCmd("luaperks menu")
+    local respec = command:lower() == "luaperks respec"
+    local dump = command:lower() == "luaperks dump"
 
     if show ~= nil then
         print("Perk Show Menu: " .. tostring(show))
@@ -201,10 +314,15 @@ local function onConsoleCommand(mode, command, selectedObject)
         end
         pself:sendEvent(settings.MOD_NAME .. "showPerkUI",
             { visiblePerks = visible })
-    elseif respec ~= nil then
+    elseif respec then
         print("Perk Respec")
+        syncCoroutine = nil
+        pendingInitialReapply = {}
+        observedOwnedPerks = {}
         interfaces.ErnPerkFramework.respecPerks()
         remainingDT = 0
+    elseif dump then
+        dumpPlayerPerks()
     end
 end
 

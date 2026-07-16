@@ -196,11 +196,10 @@ local perkPointCostElement = ui.create {
 -- ============================================================
 --  CATEGORY / TAB STATE
 --
---  activeTabType  - the currently selected top-level tab name,
+--  activeTabType  - the currently selected mod-level tab name,
 --                   or the synthetic "All" value (TAB_ALL).
---  expandedGroups - set of group names currently expanded
---                   (map of groupName -> true). Multiple groups
---                   may be open at the same time.
+--  expandedGroups - set of type/group keys currently expanded. Multiple
+--                   groups may be open at the same time.
 --  TAB_ALL        - sentinel string for the "show everything"
 --                   tab that is always appended to the right.
 -- ============================================================
@@ -208,8 +207,8 @@ local perkPointCostElement = ui.create {
 local TAB_ALL = "All"
 local activeTabType  = TAB_ALL
 local tabPageIndex = 1
--- expandedGroups is a set (map of groupName -> true) rather than a single
--- string, so multiple dropdowns can be open simultaneously.
+-- expandedGroups is a set rather than a single string, so multiple dropdowns
+-- can be open simultaneously.
 local expandedGroups = {}
 
 -- Cached tab names from the last redraw().
@@ -254,49 +253,109 @@ local activeDescriptionPageByPerkID = {}
 -- ============================================================
 --  CATEGORY HELPERS
 --
---  buildCategoryTree() scans all registered perks once and
---  returns a tree:
---    tree[typeName][groupName] = { perkID, perkID, ... }
---  sorted by the per-perk sort order (category[3]).
+--  normalizeCategory() accepts both supported category shapes:
+--    { "Type", "Group", order }                -> mod = "Unsorted"
+--    { "Mod", "Type", "Group", order }         -> explicit mod
+--    { mod="Mod", type="Type", group="Group", order=1 }
 --
---  getTabNames() returns an ordered list of top-level type
---  names, with TAB_ALL always first on the left, then the rest
---  in alphabetical order.
+--  buildCategoryTree() scans all registered perks once and returns:
+--    tree[modName][typeName][groupName] = { perkID, perkID, ... }
+--  sorted by per-perk category order.
+--
+--  getTabNames() returns ordered mod names, with TAB_ALL always appended.
 -- ============================================================
+
+local CATEGORY_UNSORTED = "Unsorted"
+local CATEGORY_GENERAL = "General"
+
+local function normalizeCategory(cat)
+    if not cat then
+        return nil
+    end
+
+    local modName = cat.mod
+    local typeName = cat.type
+    local groupName = cat.group
+    local order = cat.order
+
+    if modName == nil and typeName == nil and groupName == nil then
+        if type(cat[4]) == "number" then
+            modName = cat[1]
+            typeName = cat[2]
+            groupName = cat[3]
+            order = cat[4]
+        else
+            modName = CATEGORY_UNSORTED
+            typeName = cat[1]
+            groupName = cat[2]
+            order = cat[3]
+        end
+    else
+        modName = modName or CATEGORY_UNSORTED
+        typeName = typeName or cat[1]
+        groupName = groupName or cat[2]
+        order = order or cat[3]
+    end
+
+    return {
+        mod = modName or CATEGORY_UNSORTED,
+        type = typeName or CATEGORY_GENERAL,
+        group = groupName or CATEGORY_GENERAL,
+        order = order or 0,
+    }
+end
+
+local function perkCategory(perkID)
+    local perkObj = interfaces.ErnPerkFramework.getPerks()[perkID]
+    if not perkObj then
+        return nil
+    end
+    return normalizeCategory(perkObj:category())
+end
+
+local function groupKey(modName, typeName, groupName)
+    return tostring(modName) .. "\31" .. tostring(typeName) .. "\31" .. tostring(groupName)
+end
 
 local function buildCategoryTree()
     local tree = {}
     for _, id in ipairs(interfaces.ErnPerkFramework.getPerkIDs()) do
-        local perkObj = interfaces.ErnPerkFramework.getPerks()[id]
-        local cat = perkObj:category()
+        local cat = perkCategory(id)
         if cat then
-            local typeName  = cat[1]
-            local groupName = cat[2]
-            if not tree[typeName] then tree[typeName] = {} end
-            if not tree[typeName][groupName] then tree[typeName][groupName] = {} end
-            table.insert(tree[typeName][groupName], id)
+            if not tree[cat.mod] then tree[cat.mod] = {} end
+            if not tree[cat.mod][cat.type] then tree[cat.mod][cat.type] = {} end
+            if not tree[cat.mod][cat.type][cat.group] then tree[cat.mod][cat.type][cat.group] = {} end
+            table.insert(tree[cat.mod][cat.type][cat.group], id)
         end
     end
-    -- Sort each group's perk list by sort order (category[3])
-    for _, groups in pairs(tree) do
-        for _, ids in pairs(groups) do
-            table.sort(ids, function(a, b)
-                local ca = interfaces.ErnPerkFramework.getPerks()[a]:category()
-                local cb = interfaces.ErnPerkFramework.getPerks()[b]:category()
-                return (ca and ca[3] or 0) < (cb and cb[3] or 0)
-            end)
+    -- Sort each group's perk list by category order.
+    for _, typesByName in pairs(tree) do
+        for _, groups in pairs(typesByName) do
+            for _, ids in pairs(groups) do
+                table.sort(ids, function(a, b)
+                    local ca = perkCategory(a)
+                    local cb = perkCategory(b)
+                    local oa = ca and ca.order or 0
+                    local ob = cb and cb.order or 0
+                    if oa ~= ob then
+                        return oa < ob
+                    end
+                    return interfaces.ErnPerkFramework.getPerks()[a]:name()
+                        < interfaces.ErnPerkFramework.getPerks()[b]:name()
+                end)
+            end
         end
     end
     return tree
 end
 
 local function getTabNames(tree)
-    -- Type-specific tabs are sorted alphabetically and shown first (leftmost).
+    -- Mod-specific tabs are sorted alphabetically and shown first (leftmost).
     -- TAB_ALL is always last (rightmost) so it reads as a catch-all fallback.
     local names = {}
     local sorted = {}
-    for typeName, _ in pairs(tree) do
-        table.insert(sorted, typeName)
+    for modName, _ in pairs(tree) do
+        table.insert(sorted, modName)
     end
     table.sort(sorted)
     for _, n in ipairs(sorted) do
@@ -333,14 +392,16 @@ end
 --  When activeTabType == TAB_ALL:
 --    Flat weighted+alphabetical list identical to original.
 --
---  When a specific type tab is active:
---    Groups are shown as collapsible header rows. The expanded
---    group shows its perks in category sort order.
+--  When a specific mod tab is active:
+--    Types are shown as section rows. Groups are shown as collapsible
+--    header rows below each type. The expanded group shows its perks
+--    in category sort order.
 --    Perks already taken stay in place and are greyed out.
 --
 --  List entries are tables:
 --    { kind = "perk",   id = perkID }
---    { kind = "header", group = groupName, expanded = bool }
+--    { kind = "type",   type = typeName }
+--    { kind = "header", type = typeName, group = groupName, key = expansionKey }
 -- ============================================================
 
 local satisfiedCache = {}
@@ -361,7 +422,7 @@ end
 local visiblePerks = nil
 
 -- Flat list of entries displayed in the perk list panel.
--- Each entry is { kind="perk", id=... } or { kind="header", group=..., expanded=... }
+-- Each entry is { kind="perk", id=... }, { kind="type", type=... }, or a group header.
 local currentListEntries = {}
 
 local function buildListEntries()
@@ -387,7 +448,7 @@ local function buildListEntries()
                 w = 100
             elseif not satisfied(id) then
                 w = 50
-            elseif perkObj:cost() > remainingPoints then
+            elseif not interfaces.ErnPerkFramework.canAffordPerk(perkObj) then
                 w = 25
             else
                 w = 0
@@ -411,27 +472,42 @@ local function buildListEntries()
             table.insert(entries, { kind = "perk", id = id })
         end
     else
-        -- Category tab: header rows + perks inside expanded group
+        -- Mod tab: type rows, group header rows, and perks inside expanded groups.
         local tree = buildCategoryTree()
-        local groups = tree[activeTabType]
-        if groups then
-            local groupNames = {}
-            for g, _ in pairs(groups) do table.insert(groupNames, g) end
-            table.sort(groupNames)
+        local typesByName = tree[activeTabType]
+        if typesByName then
+            local typeNames = {}
+            for t, _ in pairs(typesByName) do table.insert(typeNames, t) end
+            table.sort(typeNames)
 
-            for _, groupName in ipairs(groupNames) do
-                local expanded = expandedGroups[groupName] == true
+            for _, typeName in ipairs(typeNames) do
                 table.insert(entries, {
-                    kind     = "header",
-                    group    = groupName,
-                    expanded = expanded,
+                    kind = "type",
+                    type = typeName,
                 })
-                if expanded then
-                    for _, id in ipairs(groups[groupName]) do
-                        if isVisible(id) then
-                            -- indented = true flags this row for left-padding
-                            -- in the renderer, visually nesting it under its header.
-                            table.insert(entries, { kind = "perk", id = id, indented = true })
+
+                local groups = typesByName[typeName]
+                local groupNames = {}
+                for g, _ in pairs(groups) do table.insert(groupNames, g) end
+                table.sort(groupNames)
+
+                for _, groupName in ipairs(groupNames) do
+                    local key = groupKey(activeTabType, typeName, groupName)
+                    local expanded = expandedGroups[key] == true
+                    table.insert(entries, {
+                        kind     = "header",
+                        type     = typeName,
+                        group    = groupName,
+                        key      = key,
+                        expanded = expanded,
+                    })
+                    if expanded then
+                        for _, id in ipairs(groups[groupName]) do
+                            if isVisible(id) then
+                                -- indented = true flags this row for left-padding
+                                -- in the renderer, visually nesting it under its header.
+                                table.insert(entries, { kind = "perk", id = id, indented = true })
+                            end
                         end
                     end
                 end
@@ -595,10 +671,7 @@ local function hasPerk(idx)
     -- Check local "just picked" tracking first so the perk greys out
     -- immediately without waiting for the addPerk event to be processed.
     if justPickedPerks[testID] then return true end
-    for _, foundID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
-        if foundID == testID then return true end
-    end
-    return false
+    return interfaces.ErnPerkFramework.playerHasPerk(testID)
 end
 
 -- perkAvailable returns true if the player does not have the perk
@@ -618,7 +691,7 @@ local function perkAvailable(perk)
     end
     -- A perk picked this session is not available again
     if justPickedPerks[perkId] then return false end
-    return satisfied(foundPerk) and (not foundPerk:active()) and foundPerk:cost() <= remainingPoints
+    return satisfied(foundPerk) and (not foundPerk:active()) and interfaces.ErnPerkFramework.canAffordPerk(foundPerk)
 end
 
 -- ============================================================
@@ -626,22 +699,24 @@ end
 --
 --  Defined here, after perkAvailable(), so they can call it.
 --  Used to decide whether tabs and group headers should be
---  greyed out and non-interactive.
+--  shown as purchasable, readable, or inactive.
 --
---  groupHasAvailablePerk(tree, typeName, groupName)
+--  groupHasAvailablePerk(tree, modName, typeName, groupName)
 --    Returns true if at least one perk in the specific group
 --    passes perkAvailable().
 --
---  tabHasAvailablePerk(tree, typeName)
---    Returns true if any group in the tab has an available perk.
+--  tabHasAvailablePerk(tree, modName)
+--    Returns true if any group in the mod tab has an available perk.
 --    TAB_ALL always returns true (it never blocks navigation).
 --
 --  Both read satisfiedCache via perkAvailable(), so repeated
 --  calls within the same redraw are cheap.
 -- ============================================================
 
-local function groupHasAvailablePerk(tree, typeName, groupName)
-    local groups = tree[typeName]
+local function groupHasAvailablePerk(tree, modName, typeName, groupName)
+    local typesByName = tree[modName]
+    if not typesByName then return false end
+    local groups = typesByName[typeName]
     if not groups then return false end
     local ids = groups[groupName]
     if not ids then return false end
@@ -653,11 +728,43 @@ end
 
 local function tabHasAvailablePerk(tree, typeName)
     if typeName == TAB_ALL then return true end
-    local groups = tree[typeName]
+    local typesByName = tree[typeName]
+    if not typesByName then return false end
+    for sectionName, groups in pairs(typesByName) do
+        for groupName, _ in pairs(groups) do
+            if groupHasAvailablePerk(tree, typeName, sectionName, groupName) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function groupHasVisiblePerk(tree, modName, typeName, groupName)
+    local typesByName = tree[modName]
+    if not typesByName then return false end
+    local groups = typesByName[typeName]
     if not groups then return false end
-    for groupName, _ in pairs(groups) do
-        if groupHasAvailablePerk(tree, typeName, groupName) then
+    local ids = groups[groupName]
+    if not ids then return false end
+    for _, id in ipairs(ids) do
+        local perkObj = interfaces.ErnPerkFramework.getPerks()[id]
+        if perkObj and (perkObj:active() or justPickedPerks[id] or (not perkObj:hidden())) then
             return true
+        end
+    end
+    return false
+end
+
+local function tabHasVisiblePerk(tree, typeName)
+    if typeName == TAB_ALL then return true end
+    local typesByName = tree[typeName]
+    if not typesByName then return false end
+    for sectionName, groups in pairs(typesByName) do
+        for groupName, _ in pairs(groups) do
+            if groupHasVisiblePerk(tree, typeName, sectionName, groupName) then
+                return true
+            end
         end
     end
     return false
@@ -678,8 +785,10 @@ end
 -- Hidden perks that are not yet obtained are excluded from the check,
 -- but if ALL perks are hidden-and-unobtained the function returns false
 -- (nothing obtained = not a completed group).
-local function groupAllObtained(tree, typeName, groupName)
-    local groups = tree[typeName]
+local function groupAllObtained(tree, modName, typeName, groupName)
+    local typesByName = tree[modName]
+    if not typesByName then return false end
+    local groups = typesByName[typeName]
     if not groups then return false end
     local ids = groups[groupName]
     if not ids or #ids == 0 then return false end
@@ -709,14 +818,16 @@ end
 -- TAB_ALL is never considered "all obtained" — it spans everything.
 local function tabAllObtained(tree, typeName)
     if typeName == TAB_ALL then return false end
-    local groups = tree[typeName]
-    if not groups then return false end
+    local typesByName = tree[typeName]
+    if not typesByName then return false end
     local anyGroup = false
-    for groupName, _ in pairs(groups) do
-        if not groupAllObtained(tree, typeName, groupName) then
-            return false
+    for sectionName, groups in pairs(typesByName) do
+        for groupName, _ in pairs(groups) do
+            if not groupAllObtained(tree, typeName, sectionName, groupName) then
+                return false
+            end
+            anyGroup = true
         end
-        anyGroup = true
     end
     return anyGroup  -- false if there were no groups at all
 end
@@ -725,9 +836,7 @@ end
 --  TAB BAR UI
 --
 --  A horizontal row of text buttons, one per tab name.
---  The active tab is highlighted. Clicking a tab sets
---  A horizontal row of text buttons, one per tab name.
---  The active tab is highlighted. Tabs with no acquirable perks
+--  The active tab is highlighted. Tabs with no visible perks
 --  are greyed and non-interactive. Clicking a live tab sets
 --  activeTabType, collapses all expandedGroups, resets list
 --  selection, and triggers a redraw via the internal event.
@@ -784,6 +893,7 @@ local function buildTabBar(tabNames, tree)
         local tabName   = tabNames[i]
         local isActive  = (tabName == activeTabType)
         local hasAvail  = tabHasAvailablePerk(tree, tabName)
+        local hasVisible = tabHasVisiblePerk(tree, tabName)
         local allDone   = tabAllObtained(tree, tabName)
 
         -- Colour priority:
@@ -794,7 +904,7 @@ local function buildTabBar(tabNames, tree)
         local btn = ui.create {}
         local capturedTab = tabName
         local clickFn
-        if hasAvail and not isActive then
+        if hasVisible and not isActive then
             clickFn = function()
                 activeTabType  = capturedTab
                 expandedGroups = {}
@@ -818,6 +928,8 @@ local function buildTabBar(tabNames, tree)
             if isActive then
                 color = 'active'
             elseif hasAvail then
+                color = 'normal'
+            elseif hasVisible then
                 color = 'normal'
             else
                 color = 'disabled'
@@ -912,26 +1024,41 @@ local function renderListEntry(idx, isSelected, tree)
         return ui.create { type = ui.TYPE.Widget, props = { size = util.vector2(0, 17) } }
     end
 
-    if entry.kind == "header" then
+    if entry.kind == "type" then
+        local btn = ui.create {}
+        btn.layout = myui.createTextButtonBorderless(
+            btn,
+            entry.type,
+            isSelected and 'active' or 'disabled',
+            'type_' .. entry.type,
+            {},
+            util.vector2(129, 17),
+            function() end,
+            {})
+        btn:update()
+        return btn
+    elseif entry.kind == "header" then
         -- Group header row.
         -- Check whether this group has any acquirable perks, and whether
         -- all its perks are already obtained, for colour selection.
-        local hasAvail   = groupHasAvailablePerk(tree, activeTabType, entry.group)
-        local allDone    = groupAllObtained(tree, activeTabType, entry.group)
-        local isExpanded = expandedGroups[entry.group] == true
+        local hasAvail   = groupHasAvailablePerk(tree, activeTabType, entry.type, entry.group)
+        local hasVisible = groupHasVisiblePerk(tree, activeTabType, entry.type, entry.group)
+        local allDone    = groupAllObtained(tree, activeTabType, entry.type, entry.group)
+        local isExpanded = expandedGroups[entry.key] == true
         local arrow      = isExpanded and "v " or "> "
         local label      = arrow .. entry.group
-        local capturedGroup = entry.group
+        local capturedKey = entry.key
+        local capturedGroup = entry.type .. "_" .. entry.group
 
         local clickFn
-        if hasAvail or allDone then
-            -- Allow expanding even when all perks are obtained, so the player
-            -- can still view the perks they have.
+        if hasVisible then
+            -- Allow expanding whenever the group has visible perks, even when
+            -- none are currently buyable, so owned perks remain readable.
             clickFn = function()
-                if expandedGroups[capturedGroup] then
-                    expandedGroups[capturedGroup] = nil
+                if expandedGroups[capturedKey] then
+                    expandedGroups[capturedKey] = nil
                 else
-                    expandedGroups[capturedGroup] = true
+                    expandedGroups[capturedKey] = true
                 end
                 pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
             end
@@ -956,7 +1083,7 @@ local function renderListEntry(idx, isSelected, tree)
                 clickFn,
                 {})
         else
-            local color = hasAvail and 'normal' or 'disabled'
+            local color = (hasAvail or hasVisible) and 'normal' or 'disabled'
             btn.layout = myui.createTextButtonBorderless(
                 btn,
                 label,
@@ -1044,7 +1171,6 @@ local function doPick()
 
     -- Track locally so hasPerk() returns true immediately
     justPickedPerks[perkID] = true
-    remainingPoints = remainingPoints - sp:cost()
 
     -- Send the actual add event (processed this frame, before next redraw)
     pself:sendEvent(MOD_NAME .. "addPerk", { perkID = perkID })
@@ -1052,13 +1178,10 @@ local function doPick()
     -- Invalidate the satisfied cache so the list reflects new state
     satisfiedCache = {}
 
-    if remainingPoints <= 0 then
-        pself:sendEvent(MOD_NAME .. "closePerkUI")
-    else
-        -- Immediately rebuild and redraw so the acquired perk is greyed out
-        -- without the player needing to click anything else first.
-        pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
-    end
+    -- Immediately rebuild and redraw so the acquired perk is greyed out
+    -- without the player needing to click anything else first. Do not auto-close:
+    -- with custom resources, another perk category may still have spendable tokens.
+    pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
 end
 
 -- ============================================================
@@ -1066,14 +1189,14 @@ end
 --
 --  navigateTab(delta) moves the active tab by delta (+1 = right, -1 = left),
 --  wrapping around at the ends.  It uses cachedTabNames so no tree rebuild
---  is needed per-frame.  Only tabs with available perks (or TAB_ALL) are
---  considered, matching the clickable-tab logic in buildTabBar.
+--  is needed per-frame.  Any tab with visible perks is considered, matching
+--  the clickable-tab logic in buildTabBar.
 -- ============================================================
 
 -- navigateTab(delta, tree) moves the active tab by delta (+1 = right, -1 = left),
 -- wrapping around at the ends.  tree is passed explicitly because cachedTree is
 -- declared later in the file and would be nil if captured as an upvalue here.
--- Only tabs with available perks (or TAB_ALL) are reachable, matching the
+-- Only tabs with visible perks (or TAB_ALL) are reachable, matching the
 -- clickable-tab logic in buildTabBar.
 local function navigateTab(delta, tree)
     if #cachedTabNames == 0 then return end
@@ -1093,7 +1216,7 @@ local function navigateTab(delta, tree)
     for _ = 1, count do
         currentIdx = ((currentIdx - 1 + delta) % count) + 1
         local candidate = cachedTabNames[currentIdx]
-        if candidate == TAB_ALL or tabHasAvailablePerk(tree, candidate) then
+        if candidate == TAB_ALL or tabHasVisiblePerk(tree, candidate) then
             activeTabType  = candidate
             expandedGroups = {}
             if perkList then perkList.selectedIndex = 1 end
@@ -1127,14 +1250,16 @@ end
 local function isEntryNavigable(idx, tree)
     local entry = currentListEntries[idx]
     if not entry then return false end
+    if entry.kind == "type" then
+        return false
+    end
     if entry.kind == "header" then
-        -- Navigable if the group has acquirable perks or is fully obtained.
+        -- Navigable if the group has anything visible to inspect.
         -- tree is passed explicitly because cachedTree is declared after this
         -- function in the file; Lua locals are only visible from their
         -- declaration point onward, so capturing cachedTree as an upvalue
         -- here would always read nil.
-        return groupHasAvailablePerk(tree, activeTabType, entry.group)
-            or groupAllObtained(tree, activeTabType, entry.group)
+        return groupHasVisiblePerk(tree, activeTabType, entry.type, entry.group)
     else
         -- Navigable if the perk is obtained or requirements are currently met
         return hasPerk(idx) or satisfied(entry.id)
@@ -1182,10 +1307,10 @@ end
 local function toggleSelectedDropdown()
     local entry = currentListEntries[getSelectedIndex()]
     if not entry or entry.kind ~= "header" then return end
-    if expandedGroups[entry.group] then
-        expandedGroups[entry.group] = nil
+    if expandedGroups[entry.key] then
+        expandedGroups[entry.key] = nil
     else
-        expandedGroups[entry.group] = true
+        expandedGroups[entry.key] = true
     end
     pself:sendEvent(MOD_NAME .. "_internalRedraw", {})
 end
@@ -1250,14 +1375,21 @@ local function updatePickButtonElement()
     pickButtonElement:update()
 
     -- ---- Remaining points / cost lines ----
-    local pts    = remainingPoints
-    local plural = pts == 1 and "" or "s"
+    local resourceID = interfaces.ErnPerkFramework.GENERIC_RESOURCE_ID
+    if selectedPerk ~= nil then
+        resourceID = interfaces.ErnPerkFramework.getPerkCostResource(selectedPerk)
+    end
+    local resource = interfaces.ErnPerkFramework.getPerkResource(resourceID)
+    local pts = interfaces.ErnPerkFramework.availablePoints(resourceID)
+    local resourceName = pts == 1 and resource.name or resource.pluralName
     remainingPointsElement.layout.props.text =
-        tostring(pts) .. " Perk Point" .. plural .. " Remaining"
+        tostring(pts) .. " " .. resourceName .. " Remaining"
     remainingPointsElement:update()
 
     if selectedPerk ~= nil then
-        perkPointCostElement.layout.props.text = "Cost: " .. tostring(selectedPerk:cost())
+        local cost = selectedPerk:cost()
+        local costResourceName = cost == 1 and resource.name or resource.pluralName
+        perkPointCostElement.layout.props.text = "Cost: " .. tostring(cost) .. " " .. costResourceName
     else
         perkPointCostElement.layout.props.text = ""
     end
@@ -1651,8 +1783,7 @@ local function showPerkUI(data)
     descriptionPagesByPerkID = {}
     activeDescriptionPageByPerkID = {}
 
-    remainingPoints = interfaces.ErnPerkFramework.totalAllowedPoints() -
-        interfaces.ErnPerkFramework.currentSpentPoints()
+    remainingPoints = interfaces.ErnPerkFramework.availablePoints()
 
     -- Set the external perk-id filter, if provided.
     if data.visiblePerks ~= nil then
@@ -1671,25 +1802,6 @@ local function showPerkUI(data)
         expandedGroups = {}
     else
         visiblePerks = nil
-    end
-
-    -- Check availability against ALL perks regardless of the active tab.
-    -- This ensures the UI opens even if the currently selected tab has no
-    -- available perks (e.g. all Faction perks are locked but a Trait perk is free).
-    if visiblePerks == nil then
-        local aPerkIsAvailable = false
-        local allPerks = interfaces.ErnPerkFramework.getPerks()
-        for _, id in ipairs(interfaces.ErnPerkFramework.getPerkIDs()) do
-            local perkObj = allPerks[id]
-            if not perkObj:hidden() and perkAvailable(id) then
-                aPerkIsAvailable = true
-                break
-            end
-        end
-        if not aPerkIsAvailable then
-            log(nil, "No available perks found.")
-            return
-        end
     end
 
     if menu == nil then

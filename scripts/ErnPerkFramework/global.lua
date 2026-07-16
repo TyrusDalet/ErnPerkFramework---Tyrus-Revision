@@ -19,6 +19,8 @@ local MOD_NAME = "ErnPerkFramework"
 local world = require('openmw.world')
 local storage = require('openmw.storage')
 
+local RESOURCE_ACTOR_SCRIPT = "scripts/ErnPerkFramework/resource_actor.lua"
+
 local mwVars = storage.globalSection(MOD_NAME .. "_mwVars")
 mwVars:setLifeTime(storage.LIFE_TIME.Temporary)
 
@@ -68,7 +70,42 @@ local function onUpdate(dt)
     updateMwVars()
 end
 
+--- Ensures an actor has the custom local script needed for framework resource
+--- damage/restoration, then forwards the payload to that actor.
+--- @param data table actor/target, resource, operation, amount, source, sourceEffect.
+local function applyActorResourceDelta(data)
+    data = data or {}
+    local actor = data.actor or data.target
+    local amount = data.amount or data.baseValue or data.value
+    if not actor or not actor:isValid() then
+        return
+    end
+    if type(amount) ~= "number" or amount <= 0 then
+        return
+    end
+
+    if not actor:hasScript(RESOURCE_ACTOR_SCRIPT) then
+        actor:addScript(RESOURCE_ACTOR_SCRIPT)
+    end
+
+    if data.sourceEffect == "FactionPerks_IL_LegionaryResolve" then
+        print("ErnPerkFramework forwarding Shield Wall resource delta amount=" .. tostring(amount))
+    end
+
+    local payload = {}
+    for key, value in pairs(data) do
+        if key ~= "actor" and key ~= "target" then
+            payload[key] = value
+        end
+    end
+    actor:sendEvent("ErnPerkFramework_ApplyActorResourceDelta", payload)
+end
+
 return {
+    eventHandlers = {
+        ErnPerkFramework_ApplyActorResourceDelta = applyActorResourceDelta,
+        [MOD_NAME .. "_ApplyActorResourceDelta"] = applyActorResourceDelta,
+    },
     engineHandlers = {
         onPlayerAdded = updateMwVars,
         onUpdate = onUpdate,
