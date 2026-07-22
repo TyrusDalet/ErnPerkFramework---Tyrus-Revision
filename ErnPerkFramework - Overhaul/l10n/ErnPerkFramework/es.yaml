@@ -1,0 +1,39 @@
+name: "ErnPerkFramework"
+
+modSettingsTitle: "Opciones del Mod"
+modSettingsDesc: "Cambia cómo funciona el mod."
+
+perksPerLevelName: "Habilidades por Nivel"
+perksPerLevelDescription: "Cuántas habilidades se obtienen por nivel de personaje."
+
+showOnRestName: "Mostrar al Descansar"
+showOnRestDescription: "Muestra la ventana de selección de habilidades al descansar. Actívalo si usas NCGDMW, NCG u otra mejora de progresión basada en el descanso."
+
+disableName: "Desactivar Mod"
+disableDescription: "Desactiva todas las habilidades."
+
+enableLoggingName: "Registro Detallado"
+
+noRequirement: "<Ninguno>"
+hiddenRequirement: "<Requisito Oculto>"
+requirements: "Requisitos"
+
+cancelButton: "Cancelar"
+pickButton: "Seleccionar Habilidad ({cost}/{available})"
+havePerk: "Ya tienes esta habilidad."
+
+# requisitos incorporados
+req_minimumLevel: "Nivel {level}"
+req_minimumSkillLevel: "{skill} {level}"
+req_minimumAttributeLevel: "{attribute} {level}"
+req_is_a_werewolf: "Hombre lobo"
+req_is_not_a_werewolf: "No es hombre lobo"
+req_is_a_vampire: "Vampiro"
+req_is_not_a_vampire: "No es vampiro"
+req_minimumFactionRank: "{factionName} {factionRankName}"
+
+not_req: "No {req}"
+list_join: "{prevList}, {nextItem}"
+list_join_or: "{prevList} o {nextItem}"
+list_join_and: "{prevList} y {nextItem}"
+list_group: "({list})"

@@ -1,0 +1,3 @@
+cultist_name: "Daedric Cultist"
+cultist_description: "Daedra of lower level are no longer hostile. Excludes Summoned Daedra."
+req_completed_daedric_quests: "Complete {done}/{total} Daedric Quests"
