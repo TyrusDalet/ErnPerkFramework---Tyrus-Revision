@@ -17,10 +17,11 @@ A perk selection window will pop up after your level up window (for NCGDMW users
   window flips sides and remains clamped inside the logical screen bounds. Hold
   left mouse to acquire it, or hold right mouse on an owned node to refund it.
   Refunding a prerequisite also refunds owned dependants.
-- Constellation nodes use both colour and shape: a green `O` is owned, a framed
-  gold `*` is available, an amber `!` needs more perk resources, and a small
-  grey `.` is locked by requirements. The same key remains visible beneath the
-  galaxy viewport.
+- Constellation nodes use compact coloured cores so their authored stars remain
+  visible: green is owned, bright gold is available, amber needs more perk
+  resources, and grey is locked by requirements. The node's larger transparent
+  interaction area remains easy to select without adding permanent button
+  frames. The labelled colour key remains beneath the galaxy viewport.
 - The constellation menu supports controllers without requiring a virtual
   cursor. Use the D-pad or left stick to select the nearest node in a direction,
   the right stick to pan, LB/RB to change mod pages, and LT/RT to zoom. Hold A

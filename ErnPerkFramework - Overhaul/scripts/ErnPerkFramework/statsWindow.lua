@@ -164,6 +164,11 @@ local function initStatsWindowIntegration()
                     priority = 1,
                 },
                 header = localization(sectionName),
+                -- Open the complete perk menu from the Stats Window heading.
+                -- Individual perk rows retain their focused single-perk view.
+                onHeaderClick = function()
+                    pself:sendEvent(MOD_NAME .. "showPerkUI", {})
+                end,
                 indent = true,
                 sort = sc.Sort.ADDED_ORDER,
                 trackedStats = { [MOD_NAME] = true },

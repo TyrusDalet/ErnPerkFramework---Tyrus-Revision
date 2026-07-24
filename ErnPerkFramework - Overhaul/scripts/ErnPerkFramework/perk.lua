@@ -743,7 +743,6 @@ function PerkFunctions.artLayout(self)
 
     local img = {
         type = ui.TYPE.Image,
-        alignment = ui.ALIGNMENT.Center,
         template = interfaces.MWUI.templates.borders,
         props = {
             resource = ui.texture {
@@ -763,8 +762,6 @@ function PerkFunctions.artLayout(self)
     return {
         type = ui.TYPE.Widget,
         props = {
-            arrange = ui.ALIGNMENT.Center,
-            autoSize = false,
             size = util.vector2(DETAIL_TEXT_WIDTH + 8, ART_SIZE.y),
         },
         external = { grow = 0 },
@@ -802,7 +799,6 @@ function PerkFunctions.requirementsLayout(self)
         local reqLayout = {
             template = interfaces.MWUI.templates.textParagraph,
             --type = ui.TYPE.Text,
-            alignment = ui.ALIGNMENT.End,
             props = {
                 autoSize = false,
                 multiline = true,
@@ -832,7 +828,6 @@ function PerkFunctions.requirementsLayout(self)
         local reqLayout = {
             template = interfaces.MWUI.templates.textParagraph,
             --type = ui.TYPE.Text,
-            alignment = ui.ALIGNMENT.End,
             props = {
                 autoSize = false,
                 multiline = true,
@@ -909,7 +904,6 @@ function PerkFunctions.detailLayout(self, descriptionText)
     local requirementsHeader = {
         template = interfaces.MWUI.templates.textHeader,
         type = ui.TYPE.Text,
-        alignment = ui.ALIGNMENT.Start,
         props = {
             textAlignH = ui.ALIGNMENT.Start,
             textAlignV = ui.ALIGNMENT.Center,
@@ -921,7 +915,6 @@ function PerkFunctions.detailLayout(self, descriptionText)
     local nameHeader = {
         template = interfaces.MWUI.templates.textHeader,
         type = ui.TYPE.Text,
-        alignment = ui.ALIGNMENT.Start,
         props = {
             textAlignH = ui.ALIGNMENT.Start,
             textAlignV = ui.ALIGNMENT.Center,
@@ -964,7 +957,6 @@ function PerkFunctions.detailLayout(self, descriptionText)
                 myui.padWidget(8, 0),
                 {
                     template = interfaces.MWUI.templates.textParagraph,
-                    alignment = ui.ALIGNMENT.Start,
                     props = {
                         autoSize = false,
                         multiline = true,
@@ -1003,7 +995,6 @@ function PerkFunctions.detailLayout(self, descriptionText)
             myui.padWidget(8, 0),
             {
                 template = interfaces.MWUI.templates.textParagraph,
-                alignment = ui.ALIGNMENT.Start,
                 props = {
                     autoSize = false,
                     multiline = true,

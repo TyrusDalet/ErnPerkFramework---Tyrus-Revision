@@ -159,7 +159,6 @@ local perkDetailElement = ui.create {
 local haveThisPerk = ui.create {
     template = interfaces.MWUI.templates.textNormal,
     type = ui.TYPE.Text,
-    alignment = ui.ALIGNMENT.Center,
     props = {
         visible = false,
         textAlignH = ui.ALIGNMENT.Center,
@@ -1365,7 +1364,10 @@ local function updatePickButtonElement()
     local selectedPerk = getSelectedPerk()
 
     -- ---- Acquire button ----
-    local acquireColor = perkAvailable(selectedPerk) and 'normal' or 'disabled'
+    -- Category and group headers have no associated perk. Keep Acquire
+    -- disabled without asking perkAvailable() to evaluate a nil selection.
+    local acquireColor = selectedPerk ~= nil and perkAvailable(selectedPerk)
+        and 'normal' or 'disabled'
     pickButtonElement.layout = myui.createTextButton(
         pickButtonElement,
         "Acquire",
@@ -1516,8 +1518,6 @@ local function menuLayout()
         type  = ui.TYPE.Container,
         template = interfaces.MWUI.templates.boxTransparentThick,
         props = {
-            horizontal      = true,
-            autoSize        = false,
             relativePosition = util.vector2(0.5, 0.5),
             anchor          = util.vector2(0.5, 0.5),
         },

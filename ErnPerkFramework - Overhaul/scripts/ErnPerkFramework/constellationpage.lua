@@ -746,7 +746,7 @@ local function addOwnedStar(content, point, color, zoom)
             size = v2(glowSize, glowSize),
             resource = whiteTexture,
             color = color,
-            alpha = 0.16,
+            alpha = 0.10,
         },
     }
     content:add {
@@ -756,7 +756,7 @@ local function addOwnedStar(content, point, color, zoom)
             size = v2(coreSize, coreSize),
             resource = whiteTexture,
             color = color,
-            alpha = 0.92,
+            alpha = 0.76,
         },
     }
 end
@@ -807,51 +807,75 @@ end
 
 local function nodeLayout(entry, position, zoom)
     local state, color = nodeState(entry.perk)
-    local sizeOffset = state == "available" and 6 or (state == "locked" and -4 or 0)
-    local nodeSize = util.clamp(NODE_WIDTH * zoom + sizeOffset, 18, 48)
+    -- The complete hit target remains comfortably large at every zoom level,
+    -- but its visible marker stays close to the authored star underneath it.
+    -- This avoids turning a dense constellation into a stack of button frames.
+    local nodeSize = util.clamp(NODE_WIDTH * zoom, 22, 44)
     local selected = controllerSelectedPerkId == entry.id
-    local marker = state == "owned" and "O"
-        or (state == "available" and "*"
-        or (state == "unaffordable" and "!" or "."))
     local nodeContent = ui.content {}
+    local centre = v2(nodeSize / 2, nodeSize / 2)
 
-    -- Shape, scale, and fill reinforce the colour coding. This keeps state
-    -- readable for colour-blind players and when a distant galaxy is zoomed out.
-    if state == "owned" then
+    local function addCore(size, alpha)
         nodeContent:add {
             type = ui.TYPE.Image,
             props = {
-                position = v2(6, 6), size = v2(nodeSize - 12, nodeSize - 12),
-                resource = whiteTexture, color = COLOR_OWNED, alpha = 0.28,
+                position = centre - v2(size / 2, size / 2),
+                size = v2(size, size),
+                resource = whiteTexture,
+                color = color,
+                alpha = alpha,
             },
         }
+    end
+
+    -- State is expressed as a compact core and glow. Available nodes are the
+    -- brightest unowned points, unaffordable nodes retain a warning glow, and
+    -- locked nodes recede to a single muted point. Owned-path overlays remain
+    -- responsible for illuminating the authored star and connecting line.
+    if state == "owned" then
+        addCore(util.clamp(13 * zoom, 9, 17), 0.16)
+        addCore(util.clamp(5 * zoom, 3, 7), 0.92)
     elseif state == "available" then
-        for _, edge in ipairs({
-            { position = v2(1, 1), size = v2(nodeSize - 2, 2) },
-            { position = v2(1, nodeSize - 3), size = v2(nodeSize - 2, 2) },
-            { position = v2(1, 1), size = v2(2, nodeSize - 2) },
-            { position = v2(nodeSize - 3, 1), size = v2(2, nodeSize - 2) },
+        addCore(util.clamp(17 * zoom, 12, 22), 0.22)
+        addCore(util.clamp(6 * zoom, 4, 8), 1)
+    elseif state == "unaffordable" then
+        addCore(util.clamp(12 * zoom, 9, 16), 0.13)
+        addCore(util.clamp(5 * zoom, 3, 7), 0.88)
+    else
+        addCore(util.clamp(4 * zoom, 3, 5), 0.72)
+    end
+
+    -- Controller focus gets restrained corner ticks rather than restoring the
+    -- permanent Morrowind button frame removed from every ordinary node.
+    if selected then
+        local radius = util.clamp(9 * zoom, 7, 11)
+        local tickLength = util.clamp(4 * zoom, 3, 5)
+        local thickness = 2
+        for _, tick in ipairs({
+            { v2(centre.x - radius, centre.y - radius), v2(tickLength, thickness) },
+            { v2(centre.x - radius, centre.y - radius), v2(thickness, tickLength) },
+            { v2(centre.x + radius - tickLength, centre.y - radius), v2(tickLength, thickness) },
+            { v2(centre.x + radius - thickness, centre.y - radius), v2(thickness, tickLength) },
+            { v2(centre.x - radius, centre.y + radius - thickness), v2(tickLength, thickness) },
+            { v2(centre.x - radius, centre.y + radius - tickLength), v2(thickness, tickLength) },
+            { v2(centre.x + radius - tickLength, centre.y + radius - thickness), v2(tickLength, thickness) },
+            { v2(centre.x + radius - thickness, centre.y + radius - tickLength), v2(thickness, tickLength) },
         }) do
             nodeContent:add {
                 type = ui.TYPE.Image,
                 props = {
-                    position = edge.position, size = edge.size,
-                    resource = whiteTexture, color = COLOR_AVAILABLE, alpha = 0.72,
+                    position = tick[1],
+                    size = tick[2],
+                    resource = whiteTexture,
+                    color = COLOR_SELECTED,
+                    alpha = 0.92,
                 },
             }
         end
     end
-    nodeContent:add {
-        type = ui.TYPE.Text,
-        template = interfaces.MWUI.templates.textNormal,
-        props = {
-            position = v2(0, math.max(1, (nodeSize - 18) / 2)),
-            size = v2(nodeSize, 18),
-            textAlignH = ui.ALIGNMENT.Center,
-            text = marker,
-            textColor = color,
-        },
-    }
+
+    -- This transparent layer supplies the pointer target independently of the
+    -- small visual marker, preserving easy mouse and controller interaction.
     nodeContent:add {
         type = ui.TYPE.Image,
         props = {
@@ -860,26 +884,9 @@ local function nodeLayout(entry, position, zoom)
             resource = transparentTexture,
         },
     }
-    if selected then
-        for _, corner in ipairs({
-            v2(2, 2), v2(nodeSize - 5, 2),
-            v2(2, nodeSize - 5), v2(nodeSize - 5, nodeSize - 5),
-        }) do
-            nodeContent:add {
-                type = ui.TYPE.Image,
-                props = {
-                    position = corner,
-                    size = v2(3, 3),
-                    resource = whiteTexture,
-                    color = COLOR_SELECTED,
-                },
-            }
-        end
-    end
     return {
         name = "node_" .. entry.id,
         type = ui.TYPE.Container,
-        template = state ~= "locked" and myui.templates.boxButton or nil,
         props = {
             position = position - v2(nodeSize / 2, nodeSize / 2),
             size = v2(nodeSize, nodeSize),
@@ -939,8 +946,9 @@ local function nodeLayout(entry, position, zoom)
     }
 end
 
---- Builds a stationary key beneath the galaxy viewport. The symbols match the
---- node markers, so state remains understandable without relying on colour.
+--- Builds a stationary key beneath the galaxy viewport. Text labels make the
+--- compact coloured node cores understandable without requiring permanent
+--- letters or button frames over the constellation artwork.
 local function stateLegendLayout()
     local items = {
         { marker = "O", key = "constellationLegendOwned", color = COLOR_OWNED },
