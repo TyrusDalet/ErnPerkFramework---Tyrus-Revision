@@ -18,6 +18,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ]]
 local interfaces = require("openmw.interfaces")
 local pself = require("openmw.self")
+local types = require("openmw.types")
+local ui = require("openmw.ui")
 local log = require("scripts.ErnPerkFramework.log")
 local settings = require("scripts.ErnPerkFramework.settings")
 local UI = require('openmw.interfaces').UI
@@ -55,8 +57,36 @@ local function forgetOwnedPerk(perkID)
     pendingInitialReapply[perkID] = nil
 end
 
+--- Restores continuous spell effects that were removed independently of their
+--- owning perk, most notably by Dispel. Removing and re-adding the spellbook
+--- entry is necessary when the record remains known but its active effect does
+--- not; ordinary powers are never processed unless a perk declares them here.
+--- @param perk table Registered perk object.
+local function reconcilePersistentSpells(perk)
+    local activeSpells = types.Actor.activeSpells(pself)
+    local spellbook = types.Actor.spells(pself)
+    for index, spellId in ipairs(perk:persistentSpells()) do
+        if type(spellId) ~= "string" or spellId == "" then
+            log(nil, "Ignoring invalid persistent spell entry " .. tostring(index)
+                .. " for perk " .. tostring(perk:id()) .. ".")
+        elseif not activeSpells:isSpellActive(spellId) then
+            local ok, err = pcall(function()
+                if spellbook[spellId] then spellbook:remove(spellId) end
+                spellbook:add(spellId)
+            end)
+            if ok then
+                log(1, nil, "Restored persistent spell " .. spellId
+                    .. " for perk " .. tostring(perk:id()) .. ".")
+            else
+                log(nil, "Could not restore persistent spell " .. spellId
+                    .. " for perk " .. tostring(perk:id()) .. ": " .. tostring(err))
+            end
+        end
+    end
+end
+
 local function syncPerks()
-    log(nil, "syncPerks() started.")
+    log(2, nil, "syncPerks() started.")
     -- Keep pruning until the number of perks stops going down. This handles
     -- dependency chains where removing one perk can invalidate another.
     --
@@ -121,6 +151,7 @@ local function syncPerks()
         local foundPerk = interfaces.ErnPerkFramework.getPerks()[perkID]
         if foundPerk then
             foundPerk:onAdd()
+            reconcilePersistentSpells(foundPerk)
             observedOwnedPerks[perkID] = true
             pendingInitialReapply[perkID] = nil
         elseif pendingInitialReapply[perkID] then
@@ -128,7 +159,7 @@ local function syncPerks()
         end
     end
 
-    log(nil, "syncPerks() ended.")
+    log(2, nil, "syncPerks() ended.")
 end
 
 local SYNC_STEPS_PER_TICK = 128
@@ -189,7 +220,7 @@ local function addPerk(data)
         return
     end
     if hasPerk(data.perkID) then
-        log(nil, "Perk " .. tostring(data.perkID) .. " is already active. Can't add it twice.")
+        log(2, nil, "Perk " .. tostring(data.perkID) .. " is already active. Can't add it twice.")
         return
     end
     if foundPerk:evaluateRequirements().satisfied then
@@ -224,19 +255,31 @@ local function removePerk(data)
         error("removePerk(" .. tostring(data.perkID) .. ") called with bad perkID.")
         return
     end
+    local cascade = interfaces.ErnPerkFramework.getPerkRefundCascade(data.perkID)
+    if #cascade == 0 then
+        return
+    end
+    local removeSet = {}
+    for _, perkID in ipairs(cascade) do
+        removeSet[perkID] = true
+    end
     local activePerksByID = {}
     for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
-        table.insert(activePerksByID, perkID)
-    end
-    for i, p in ipairs(activePerksByID) do
-        if p == data.perkID then
-            table.remove(activePerksByID, i)
-            break
+        if not removeSet[perkID] then
+            table.insert(activePerksByID, perkID)
         end
     end
     interfaces.ErnPerkFramework._setPlayerPerks(activePerksByID)
-    foundPerk:onRemove()
-    forgetOwnedPerk(data.perkID)
+    for _, perkID in ipairs(cascade) do
+        local perk = interfaces.ErnPerkFramework.getPerks()[perkID]
+        if perk then
+            local ok, err = pcall(function() perk:onRemove() end)
+            if not ok then
+                log(nil, "Refund onRemove failed for " .. tostring(perkID) .. ": " .. tostring(err))
+            end
+        end
+        forgetOwnedPerk(perkID)
+    end
 end
 
 local function splitString(str)
@@ -247,18 +290,25 @@ local function splitString(str)
     return out
 end
 
+--- Prints player-invoked command output to the visible in-game console.
+--- Framework diagnostics still use print()/log so they remain log-only.
+--- @param message any Text or value to display.
+local function consolePrint(message)
+    ui.printToConsole(tostring(message), ui.CONSOLE_COLOR.Default)
+end
+
 local function dumpPlayerPerks()
-    print("PerkFramework owned perks:")
+    consolePrint("PerkFramework owned perks:")
     local playerPerks = interfaces.ErnPerkFramework.getPlayerPerks()
     if #playerPerks == 0 then
-        print("  none")
+        consolePrint("  none")
         return
     end
 
     for i, perkID in ipairs(playerPerks) do
         local foundPerk = interfaces.ErnPerkFramework.getPerks()[perkID]
         if foundPerk == nil then
-            print("  " .. tostring(i) .. ". " .. tostring(perkID) .. " registered=false")
+            consolePrint("  " .. tostring(i) .. ". " .. tostring(perkID) .. " registered=false")
         else
             local ok, req = pcall(function()
                 return foundPerk:evaluateRequirements()
@@ -268,7 +318,7 @@ local function dumpPlayerPerks()
                 reqText = tostring(req.satisfied)
             end
             local resourceID = interfaces.ErnPerkFramework.getPerkCostResource(foundPerk)
-            print("  " .. tostring(i) .. ". " .. tostring(perkID)
+            consolePrint("  " .. tostring(i) .. ". " .. tostring(perkID)
                 .. " registered=true"
                 .. " requirements=" .. reqText
                 .. " cost=" .. tostring(foundPerk:cost())
@@ -307,7 +357,7 @@ local function onConsoleCommand(mode, command, selectedObject)
     local dump = command:lower() == "luaperks dump"
 
     if show ~= nil then
-        print("Perk Show Menu: " .. tostring(show))
+        consolePrint("Perk Show Menu: " .. tostring(show))
         local visible = splitString(show)
         if #visible == 0 then
             visible = nil
@@ -315,7 +365,7 @@ local function onConsoleCommand(mode, command, selectedObject)
         pself:sendEvent(settings.MOD_NAME .. "showPerkUI",
             { visiblePerks = visible })
     elseif respec then
-        print("Perk Respec")
+        consolePrint("Perk Respec")
         syncCoroutine = nil
         pendingInitialReapply = {}
         observedOwnedPerks = {}

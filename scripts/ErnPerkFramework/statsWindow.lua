@@ -128,7 +128,7 @@ end
 local function initStatsWindowIntegration()
     if interfaces.StatsWindow then
         local sc = interfaces.StatsWindow.Constants
-        log(nil, "StatsWindow found.")
+        log(1, nil, "StatsWindow found.")
         interfaces.StatsWindow.trackStat(MOD_NAME, function()
             return interfaces.ErnPerkFramework.getPlayerPerks()
         end)
@@ -164,6 +164,11 @@ local function initStatsWindowIntegration()
                     priority = 1,
                 },
                 header = localization(sectionName),
+                -- Open the complete perk menu from the Stats Window heading.
+                -- Individual perk rows retain their focused single-perk view.
+                onHeaderClick = function()
+                    pself:sendEvent(MOD_NAME .. "showPerkUI", {})
+                end,
                 indent = true,
                 sort = sc.Sort.ADDED_ORDER,
                 trackedStats = { [MOD_NAME] = true },
@@ -204,7 +209,7 @@ local function initStatsWindowIntegration()
                 end,
             })
     else
-        log(nil, "StatsWindow not found.")
+        log(2, nil, "StatsWindow not found.")
     end
 end
 

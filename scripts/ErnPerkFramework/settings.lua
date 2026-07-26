@@ -63,6 +63,13 @@ local function init()
                 renderer = "checkbox",
             },
             {
+                key = "constellationMenuEnabled",
+                name = "constellationMenuEnabledName",
+                description = "constellationMenuEnabledDescription",
+                default = false,
+                renderer = "checkbox",
+            },
+            {
                 key = "disable",
                 name = "disableName",
                 description = "disableDescription",
@@ -70,10 +77,16 @@ local function init()
                 renderer = "checkbox",
             },
             {
-                key = "enableLogging",
-                name = "enableLoggingName",
-                default = false,
-                renderer = "checkbox",
+                key = "debugVerbosity",
+                name = "debugVerbosityName",
+                description = "debugVerbosityDescription",
+                default = 0,
+                renderer = "number",
+                argument = {
+                    integer = true,
+                    min = 0,
+                    max = 3,
+                },
             }
         }
     }

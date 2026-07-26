@@ -1,6 +1,7 @@
 --[[
 ErnPerkFramework for OpenMW.
-opyright (C) 2026 See AUTHORS.txt
+Copyright (C) 2025 Erin Pentecost
+2026 Robbie Barker
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -30,6 +31,7 @@ local myui = require('scripts.ErnPerkFramework.pcp.myui')
 local list = require('scripts.ErnPerkFramework.list')
 local core = require("openmw.core")
 local localization = core.l10n(MOD_NAME)
+local constellationPage = require("scripts.ErnPerkFramework.constellationpage")
 
 local DEBOUNCE_FRAMES = 5
 local TAB_BAR_WIDTH = 700
@@ -157,7 +159,6 @@ local perkDetailElement = ui.create {
 local haveThisPerk = ui.create {
     template = interfaces.MWUI.templates.textNormal,
     type = ui.TYPE.Text,
-    alignment = ui.ALIGNMENT.Center,
     props = {
         visible = false,
         textAlignH = ui.ALIGNMENT.Center,
@@ -678,7 +679,7 @@ end
 -- and meets all requirements and can afford it.
 local function perkAvailable(perk)
     if perk == nil then
-        log(nil, "perkAvailable(nil)")
+        log(1, nil, "perkAvailable(nil)")
         return false
     end
     local foundPerk = perk
@@ -997,7 +998,7 @@ local function viewPerk(perkID, idx)
         perkList.selectedIndex = idx
     end
 
-    log(nil, "Showing detail for perk " .. foundPerk:name())
+    log(3, nil, "Showing detail for perk " .. foundPerk:name())
 
     -- Update the detail panel and "have this perk" notice directly — these
     -- are safe to call from inside a UI callback because they are separate
@@ -1167,7 +1168,7 @@ local function doPick()
     if sp == nil or not perkAvailable(sp) then return end
 
     local perkID = sp:id()
-    log(nil, "Adding perk " .. perkID)
+    log(1, nil, "Adding perk " .. perkID)
 
     -- Track locally so hasPerk() returns true immediately
     justPickedPerks[perkID] = true
@@ -1363,7 +1364,10 @@ local function updatePickButtonElement()
     local selectedPerk = getSelectedPerk()
 
     -- ---- Acquire button ----
-    local acquireColor = perkAvailable(selectedPerk) and 'normal' or 'disabled'
+    -- Category and group headers have no associated perk. Keep Acquire
+    -- disabled without asking perkAvailable() to evaluate a nil selection.
+    local acquireColor = selectedPerk ~= nil and perkAvailable(selectedPerk)
+        and 'normal' or 'disabled'
     pickButtonElement.layout = myui.createTextButton(
         pickButtonElement,
         "Acquire",
@@ -1466,8 +1470,11 @@ perkList = list.NewList(
 -- ============================================================
 
 local function closeUI()
+    if constellationPage.isOpen() then
+        constellationPage.close()
+    end
     if menu ~= nil then
-        log(nil, "closing ui")
+        log(3, nil, "closing ui")
         menu:destroy()
         menu = nil
 
@@ -1511,8 +1518,6 @@ local function menuLayout()
         type  = ui.TYPE.Container,
         template = interfaces.MWUI.templates.boxTransparentThick,
         props = {
-            horizontal      = true,
-            autoSize        = false,
             relativePosition = util.vector2(0.5, 0.5),
             anchor          = util.vector2(0.5, 0.5),
         },
@@ -1776,6 +1781,15 @@ local debounce = 0
 local function showPerkUI(data)
     data = data or {}
 
+    if settings.constellationMenuEnabled == true then
+        if menu ~= nil then closeUI() end
+        constellationPage.show(data)
+        return
+    end
+    if constellationPage.isOpen() then
+        constellationPage.close()
+    end
+
     -- Prevent input for 5 frames to stop accidental Enter from console.
     debounce = DEBOUNCE_FRAMES
     satisfiedCache  = {}
@@ -1796,7 +1810,7 @@ local function showPerkUI(data)
             visiblePerks[v] = true
             idListString = idListString .. ", " .. tostring(v)
         end
-        log(nil, "Showing explicit subset of perks: " .. idListString)
+        log(2, nil, "Showing explicit subset of perks: " .. idListString)
         activeTabType = TAB_ALL
         tabPageIndex = 1
         expandedGroups = {}
@@ -1818,7 +1832,7 @@ local function showPerkUI(data)
         expandedGroups = {}
 
         interfaces.UI.setMode('Interface', { windows = {} })
-        log(nil, "Showing Perk UI...")
+        log(2, nil, "Showing Perk UI...")
         perkList.selectedIndex = 1
         menu = ui.create(menuLayout())
         redraw()
@@ -1833,7 +1847,11 @@ end
 --  INPUT
 -- ============================================================
 
-local function onMouseWheel(direction)
+local function onMouseWheel(direction, horizontal)
+    if constellationPage.isOpen() then
+        constellationPage.onMouseWheel(direction, horizontal or 0)
+        return
+    end
     if menu == nil then return end
     -- direction < 0 = wheel scrolled down → move cursor DOWN (higher index)
     -- direction > 0 = wheel scrolled up   → move cursor UP   (lower index)
@@ -1894,6 +1912,10 @@ end
 local LONG_DEBOUNCE = 5 * DEBOUNCE_FRAMES
 
 local function onFrame(dt)
+    if constellationPage.isOpen() then
+        constellationPage.onFrame(dt)
+        return
+    end
     if menu == nil then return end
     myui.processButtonAction(dt)
 
@@ -2023,12 +2045,20 @@ local function onInternalLightRedraw()
     lightRedraw()
 end
 
+-- Constellation mutations use the same deferred-redraw pattern as the classic
+-- menu. The add/remove event is queued first, so ownership is current by the
+-- time this handler safely rebuilds the node graph.
+local function onInternalConstellationRedraw()
+    constellationPage.redraw()
+end
+
 return {
     eventHandlers = {
         [MOD_NAME .. "showPerkUI"]            = showPerkUI,
         [MOD_NAME .. "closePerkUI"]           = closeUI,
         [MOD_NAME .. "_internalRedraw"]       = onInternalRedraw,
         [MOD_NAME .. "_internalLightRedraw"]  = onInternalLightRedraw,
+        [MOD_NAME .. "_internalConstellationRedraw"] = onInternalConstellationRedraw,
     },
     engineHandlers = {
         onFrame      = onFrame,

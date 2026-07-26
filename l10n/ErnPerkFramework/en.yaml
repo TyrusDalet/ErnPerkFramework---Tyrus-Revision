@@ -14,10 +14,15 @@ showOnRestDescription: "Show the perk selection window after resting. Enable thi
 allowCustomPerkAcquisitionMethodsName: "Allow Custom Perk Acquisition Methods"
 allowCustomPerkAcquisitionMethodsDescription: "Allow perk packs to define their own perk point resources instead of using only generic level-based perk points."
 
+constellationMenuEnabledName: "Constellation Perk Menu"
+constellationMenuEnabledDescription: "Use the experimental pannable constellation display instead of the classic perk list."
+
 disableName: "Disable Mod"
 disableDescription: "Disable all perks."
 
 enableLoggingName: "Verbose Logging"
+debugVerbosityName: "Debug Verbosity"
+debugVerbosityDescription: "Controls framework debug logging.\n0) Off\n1) Important state changes only\n2) Detailed perk sync and grant logs\n3) Trace-level UI, requirement, and polling logs"
 
 noRequirement: "<None>"
 hiddenRequirement: "<Requirement Hidden>"
@@ -26,6 +31,18 @@ requirements: "Requirements"
 cancelButton: "Cancel"
 pickButton: "Select Perk ({cost}/{available})"
 havePerk: "You have this perk."
+
+constellationHoverPrompt: "Hover over a perk node for details. Drag empty space to pan the galaxy."
+constellationStatus_owned: "Owned - hold right mouse to refund"
+constellationStatus_available: "Available - hold left mouse to acquire"
+constellationStatus_unaffordable: "Not enough perk resources"
+constellationStatus_locked: "Requirements not met"
+constellationAcquiring: "Acquiring"
+constellationRefunding: "Refunding"
+constellationLegendOwned: "Owned"
+constellationLegendAvailable: "Available"
+constellationLegendUnaffordable: "Needs points"
+constellationLegendLocked: "Locked"
 
 # built-in requirements
 req_minimumLevel: "Level {level}"

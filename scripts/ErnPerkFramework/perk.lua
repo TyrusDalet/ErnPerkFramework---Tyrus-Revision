@@ -1,6 +1,7 @@
 --[[
 ErnPerkFramework for OpenMW.
-Copyright (C) 2026 See AUTHORS.txt
+Copyright (C) 2025 Erin Pentecost
+2026 Robbie Barker
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -323,6 +324,19 @@ function PerkFunctions.id(self)
     return self.record.id
 end
 
+--- Returns continuous spell effects that should be active while this perk is
+--- owned. A function-valued declaration allows an upgrading perk chain to
+--- expose only the spell belonging to its currently effective rank.
+--- @return table spellIds Expected persistent spell IDs.
+function PerkFunctions.persistentSpells(self)
+    local spellIds = self.record.persistentSpells
+    if type(spellIds) == "function" then
+        spellIds = spellIds()
+    end
+    if type(spellIds) ~= "table" then return {} end
+    return spellIds
+end
+
 --- Gets the cost of the perk, defaulting to 1.
 --- If `cost` in the record is a function, it's called to get the cost.
 --- @param self table The perk object.
@@ -355,7 +369,20 @@ end
 function PerkFunctions.hidden(self)
     local hide = false
     if self.record.hidden ~= nil then
-        hide = resolve(self.record.hidden)
+        if type(self.record.hidden) == 'function' then
+            hide = self.record.hidden(self)
+        else
+            hide = self.record.hidden
+        end
+    elseif type(self.record.requirements) == 'table' and self.record.requirements.hidden ~= nil then
+        -- Requirement builders can attach a menu visibility predicate to the
+        -- returned requirement list. This keeps large perk packs from having
+        -- to repeat identical `hidden = ...` wiring on every perk record.
+        if type(self.record.requirements.hidden) == 'function' then
+            hide = self.record.requirements.hidden(self)
+        else
+            hide = self.record.requirements.hidden
+        end
     end
     return hide
 end
@@ -408,6 +435,248 @@ end
 --- @return table|nil The category table, or nil.
 function PerkFunctions.category(self)
     return self.record.category
+end
+
+--- Returns optional constellation layout metadata supplied by the perk pack.
+--- Supported fields are intentionally open-ended; the framework renderer uses
+--- `x` and `y` as normalized coordinates inside a constellation when present.
+--- @return table|nil graph Perk-supplied graph metadata.
+function PerkFunctions.graph(self)
+    local source = self.record.graph or self.record.requirements.graph or {}
+    local graph = {}
+    for key, value in pairs(source) do
+        graph[key] = value
+    end
+
+    if graph.level == nil then
+        local priorities = {
+            skillLevel = 4,
+            factionRank = 3,
+            level = 2,
+            attributeLevel = 1,
+        }
+        local bestPriority = 0
+        for _, requirement in ipairs(self.record.requirements or {}) do
+            local metadata = requirement.graph
+            local priority = metadata and priorities[metadata.kind] or 0
+            if priority > bestPriority and type(metadata.value) == "number" then
+                bestPriority = priority
+                graph.level = metadata.value
+            end
+        end
+    end
+
+    if next(graph) == nil then
+        return nil
+    end
+    return graph
+end
+
+--- Returns whether this node must be omitted from the constellation until the
+--- perk has been granted elsewhere. Unlike `hidden`, this is an explicit
+--- acquisition rule rather than a progression-visibility preference.
+--- @return boolean hidden True when the unowned node must not be rendered.
+function PerkFunctions.constellationHidden(self)
+    if self:active() then return false end
+    local graph = self:graph()
+    return graph ~= nil and resolve(graph.hiddenUntilOwned) == true
+end
+
+--- Returns perk IDs whose ownership makes this perk a mutually exclusive
+--- choice. Built-in `invert(hasPerk(...))` requirements are detected without
+--- parsing localized requirement text.
+--- @return table perkIDs Registered mutually exclusive perk IDs.
+function PerkFunctions.mutuallyExclusiveWith(self)
+    local found = {}
+    local ids = {}
+
+    local function add(perkId)
+        if type(perkId) == "string" and not found[perkId]
+            and interfaces.ErnPerkFramework.isPerkRegistered(perkId) then
+            found[perkId] = true
+            table.insert(ids, perkId)
+        end
+    end
+
+    local function visitPositive(graph)
+        if type(graph) ~= "table" then return end
+        if graph.kind == "perk" or graph.kind == "optionalPerk" then
+            for _, perkId in ipairs(graph.perkIds or {}) do add(perkId) end
+        elseif graph.kind == "group" then
+            for _, child in ipairs(graph.requirements or {}) do
+                visitPositive(child.graph)
+            end
+        end
+    end
+
+    local function visitRequirement(requirement)
+        if resolve(requirement and requirement.omit) then return end
+        local graph = requirement and requirement.graph
+        if type(graph) ~= "table" then return end
+        if graph.kind == "not" then
+            visitPositive(graph.requirement and graph.requirement.graph)
+        elseif graph.kind == "group" then
+            for _, child in ipairs(graph.requirements or {}) do visitRequirement(child) end
+        end
+    end
+
+    for _, requirement in ipairs(self.record.requirements or {}) do
+        visitRequirement(requirement)
+    end
+    table.sort(ids)
+    return ids
+end
+
+--- Returns registered perk IDs that act as positive prerequisites.
+--- Built-in requirement constructors expose machine-readable graph metadata,
+--- allowing UI and interop code to inspect dependency relationships without
+--- parsing localized requirement text. Negated requirements never create edges.
+--- @return table dependencies Unique prerequisite perk IDs.
+function PerkFunctions.dependencies(self)
+    local found = {}
+    local dependencies = {}
+
+    local function add(perkId)
+        if type(perkId) ~= "string" or perkId == self:id() or found[perkId] then
+            return
+        end
+        if interfaces.ErnPerkFramework.isPerkRegistered(perkId) then
+            found[perkId] = true
+            table.insert(dependencies, perkId)
+        end
+    end
+
+    local function visitRequirement(requirement)
+        if resolve(requirement and requirement.omit) then
+            return
+        end
+        local graph = requirement and requirement.graph
+        if type(graph) ~= "table" then
+            return
+        end
+        if graph.kind == "not" or graph.kind == "registeredPerk" then
+            return
+        end
+        if graph.kind == "perk" or graph.kind == "optionalPerk" then
+            for _, perkId in ipairs(graph.perkIds or {}) do
+                add(perkId)
+            end
+            return
+        end
+        if graph.kind == "group" then
+            for _, child in ipairs(graph.requirements or {}) do
+                visitRequirement(child)
+            end
+        end
+    end
+
+    for _, requirement in ipairs(self.record.requirements or {}) do
+        visitRequirement(requirement)
+    end
+    for _, perkId in ipairs((self.record.graph and self.record.graph.dependencies) or {}) do
+        add(perkId)
+    end
+
+    table.sort(dependencies)
+    return dependencies
+end
+
+--- Tests whether perk-based requirements would remain satisfied after a
+--- proposed set of owned perks is removed. Non-perk requirements are evaluated
+--- normally because removing perks cannot change them directly.
+--- @param removed table Set of perk IDs proposed for removal.
+--- @return boolean satisfied True when the remaining owned perks satisfy the graph.
+function PerkFunctions.dependenciesSatisfiedWithout(self, removed)
+    removed = removed or {}
+
+    local function owned(perkId)
+        return not removed[perkId] and interfaces.ErnPerkFramework.playerHasPerk(perkId)
+    end
+
+    local function currentResult(requirement)
+        local ok, result = pcall(requirement.check)
+        return ok and result == true
+    end
+
+    -- Returns whether this branch is affected by the proposed refund and, when
+    -- it is, whether its perk dependency can still be met. Unrelated top-level
+    -- requirements are deliberately ignored: losing faction rank later should
+    -- not make refunding a different prerequisite strip this perk as collateral.
+    local function evaluate(requirement)
+        if resolve(requirement and requirement.omit) then return false, true end
+        local graph = requirement and requirement.graph
+        if type(graph) ~= "table" then
+            return false, true
+        end
+        if graph.kind == "perk" then
+            local affected = false
+            for _, perkId in ipairs(graph.perkIds or {}) do
+                affected = affected or removed[perkId] == true
+            end
+            if not affected then return false, true end
+            for _, perkId in ipairs(graph.perkIds or {}) do
+                if owned(perkId) then return true, true end
+            end
+            return true, false
+        end
+        if graph.kind == "optionalPerk" then
+            local registered = false
+            local affected = false
+            for _, perkId in ipairs(graph.perkIds or {}) do
+                if interfaces.ErnPerkFramework.isPerkRegistered(perkId) then
+                    registered = true
+                    affected = affected or removed[perkId] == true
+                end
+            end
+            if not registered or not affected then return false, true end
+            for _, perkId in ipairs(graph.perkIds or {}) do
+                if interfaces.ErnPerkFramework.isPerkRegistered(perkId) and owned(perkId) then
+                    return true, true
+                end
+            end
+            return true, false
+        end
+        if graph.kind == "group" then
+            local children = {}
+            local affected = false
+            for _, child in ipairs(graph.requirements or {}) do
+                local childAffected, childSatisfied = evaluate(child)
+                affected = affected or childAffected
+                table.insert(children, {
+                    requirement = child,
+                    affected = childAffected,
+                    satisfied = childSatisfied,
+                })
+            end
+            if not affected then return false, true end
+            if graph.mode == "any" then
+                for _, child in ipairs(children) do
+                    local satisfied = child.affected and child.satisfied or currentResult(child.requirement)
+                    if satisfied then return true, true end
+                end
+                return true, false
+            end
+            for _, child in ipairs(children) do
+                if child.affected and not child.satisfied then return true, false end
+            end
+            return true, true
+        end
+        if graph.kind == "not" then
+            -- Removing a positive prerequisite cannot make a NOT requirement
+            -- fail when it was satisfied before the refund.
+            return false, true
+        end
+        return false, true
+    end
+
+    for _, requirement in ipairs(self.record.requirements or {}) do
+        local affected, satisfied = evaluate(requirement)
+        if affected and not satisfied then return false end
+    end
+    for _, perkId in ipairs((self.record.graph and self.record.graph.dependencies) or {}) do
+        if removed[perkId] and not owned(perkId) then return false end
+    end
+    return true
 end
 
 -- Returns true if the player currently has the perk.
@@ -474,7 +743,6 @@ function PerkFunctions.artLayout(self)
 
     local img = {
         type = ui.TYPE.Image,
-        alignment = ui.ALIGNMENT.Center,
         template = interfaces.MWUI.templates.borders,
         props = {
             resource = ui.texture {
@@ -494,8 +762,6 @@ function PerkFunctions.artLayout(self)
     return {
         type = ui.TYPE.Widget,
         props = {
-            arrange = ui.ALIGNMENT.Center,
-            autoSize = false,
             size = util.vector2(DETAIL_TEXT_WIDTH + 8, ART_SIZE.y),
         },
         external = { grow = 0 },
@@ -533,7 +799,6 @@ function PerkFunctions.requirementsLayout(self)
         local reqLayout = {
             template = interfaces.MWUI.templates.textParagraph,
             --type = ui.TYPE.Text,
-            alignment = ui.ALIGNMENT.End,
             props = {
                 autoSize = false,
                 multiline = true,
@@ -563,7 +828,6 @@ function PerkFunctions.requirementsLayout(self)
         local reqLayout = {
             template = interfaces.MWUI.templates.textParagraph,
             --type = ui.TYPE.Text,
-            alignment = ui.ALIGNMENT.End,
             props = {
                 autoSize = false,
                 multiline = true,
@@ -640,7 +904,6 @@ function PerkFunctions.detailLayout(self, descriptionText)
     local requirementsHeader = {
         template = interfaces.MWUI.templates.textHeader,
         type = ui.TYPE.Text,
-        alignment = ui.ALIGNMENT.Start,
         props = {
             textAlignH = ui.ALIGNMENT.Start,
             textAlignV = ui.ALIGNMENT.Center,
@@ -652,7 +915,6 @@ function PerkFunctions.detailLayout(self, descriptionText)
     local nameHeader = {
         template = interfaces.MWUI.templates.textHeader,
         type = ui.TYPE.Text,
-        alignment = ui.ALIGNMENT.Start,
         props = {
             textAlignH = ui.ALIGNMENT.Start,
             textAlignV = ui.ALIGNMENT.Center,
@@ -695,7 +957,6 @@ function PerkFunctions.detailLayout(self, descriptionText)
                 myui.padWidget(8, 0),
                 {
                     template = interfaces.MWUI.templates.textParagraph,
-                    alignment = ui.ALIGNMENT.Start,
                     props = {
                         autoSize = false,
                         multiline = true,
@@ -734,7 +995,6 @@ function PerkFunctions.detailLayout(self, descriptionText)
             myui.padWidget(8, 0),
             {
                 template = interfaces.MWUI.templates.textParagraph,
-                alignment = ui.ALIGNMENT.Start,
                 props = {
                     autoSize = false,
                     multiline = true,

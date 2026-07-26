@@ -48,6 +48,7 @@ end
 local function minimumLevel(level)
     return {
         id = builtin .. 'minimumLevel',
+        graph = { kind = "level", value = level },
         localizedName = localization('req_minimumLevel', { level = level }),
         check = function()
             return types.Actor.stats.level(pself).current >= level
@@ -63,6 +64,7 @@ local function minimumSkillLevel(skillID, level)
     local skillRecord = core.stats.Skill.records[skillID]
     return {
         id = builtin .. 'minimumSkillLevel',
+        graph = { kind = "skillLevel", skillId = skillID, value = level },
         localizedName = localization('req_minimumSkillLevel', { skill = skillRecord.name, level = level }),
         check = function()
             return types.NPC.stats.skills[skillID](pself).base >= level
@@ -78,6 +80,7 @@ local function minimumAttributeLevel(attributeID, level)
     local attributeRecord = core.stats.Attribute.records[attributeID]
     return {
         id = builtin .. 'minimumAttributeLevel',
+        graph = { kind = "attributeLevel", attributeId = attributeID, value = level },
         localizedName = localization('req_minimumAttributeLevel', { attribute = attributeRecord.name, level = level }),
         check = function()
             return types.Actor.stats.attributes[attributeID](pself).base >= level
@@ -130,6 +133,7 @@ local function minimumFactionRank(factionID, rank)
 
     return {
         id = builtin .. 'minimumFactionRank',
+        graph = { kind = "factionRank", factionId = factionID, value = rank },
         localizedName = localization('req_minimumFactionRank',
             { factionName = factionRecord.name, factionRankName = factionRankName }),
         check = function()
@@ -197,6 +201,7 @@ local function hasPerk(...)
     local args = { select(1, ...) }
     return {
         id = builtin .. 'perk',
+        graph = { kind = "perk", mode = "any", perkIds = args },
         localizedName = function()
             local perkNames = {}
             for _, id in ipairs(args) do
@@ -223,6 +228,7 @@ local function registeredPerk(...)
     local args = { select(1, ...) }
     return {
         id = builtin .. 'registeredPerk',
+        graph = { kind = "registeredPerk", mode = "any", perkIds = args },
         localizedName = function()
             local perkNames = {}
             for _, id in ipairs(args) do
@@ -253,6 +259,7 @@ local function hasPerkIfRegistered(...)
     local args = { select(1, ...) }
     return {
         id = builtin .. 'optionalPerk',
+        graph = { kind = "optionalPerk", mode = "any", perkIds = args },
         localizedName = function()
             local perkNames = {}
             for _, id in ipairs(args) do
@@ -323,6 +330,7 @@ local function orGroup(...)
     local args = { select(1, ...) }
     return {
         id = builtin .. 'or',
+        graph = { kind = "group", mode = "any", requirements = args },
         localizedName = function()
             local reqNames = {}
             for _, req in ipairs(args) do
@@ -350,6 +358,7 @@ local function andGroup(...)
     local args = { select(1, ...) }
     return {
         id = builtin .. 'and',
+        graph = { kind = "group", mode = "all", requirements = args },
         localizedName = function()
             local reqNames = {}
             for _, req in ipairs(args) do
@@ -375,6 +384,7 @@ end
 local function invert(someReq)
     return {
         id = builtin .. 'not',
+        graph = { kind = "not", requirement = someReq },
         localizedName = function()
             return localization('not_req', { req = resolve(someReq.localizedName) })
         end,
@@ -389,7 +399,7 @@ end
 --- @return any The value of the global variable.
 local function readGlobalVariable(name)
     local readVal = mwVars:get(pself.id)[name]
-    log(name, "Variable " .. name .. ": " .. tostring(readVal))
+    log(3, name, "Variable " .. name .. ": " .. tostring(readVal))
     return readVal
 end
 

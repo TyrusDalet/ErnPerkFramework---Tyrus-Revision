@@ -11,6 +11,7 @@ registered perk handlers in deterministic priority order.
 ]]
 
 local interfaces = require("openmw.interfaces")
+local core = require("openmw.core")
 local types = require("openmw.types")
 local pself = require("openmw.self")
 
@@ -49,6 +50,11 @@ end
 
 local function playerKnowsSpell(spell)
     if spell == nil or spell.id == nil then
+        return false
+    end
+    local record = core.magic.spells.records[spell.id]
+    if record == nil or (record.type ~= core.magic.SPELL_TYPE.Spell
+            and record.type ~= core.magic.SPELL_TYPE.Power) then
         return false
     end
     for _, knownSpell in pairs(types.Actor.spells(pself)) do

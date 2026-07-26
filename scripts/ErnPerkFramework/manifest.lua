@@ -45,6 +45,9 @@ local playerPerks = {}
 -- so requirement checks and UI state do not repeatedly scan the ordered list.
 local playerPerkSet = {}
 local playerPerkRevision = 0
+-- Mod-owned visual definitions keyed by normalized perk category. The
+-- framework renders these but does not assign symbols to another mod's trees.
+local constellationDefinitions = {}
 local perkResources = {
     [GENERIC_RESOURCE_ID] = {
         id = GENERIC_RESOURCE_ID,
@@ -123,7 +126,9 @@ end
 ---@field hidden? boolean|fun():boolean              -- Whether perk is hidden
 ---@field cost? number|fun():number                  -- Cost of the perk
 ---@field costResource? string|fun():string          -- Optional custom resource spent to acquire the perk
+---@field persistentSpells? table|fun():table        -- Continuous spell effects restored when Dispel removes them
 ---@field category? table                            -- Optional category data.
+---@field graph? table                               -- Optional constellation layout/dependency metadata.
 --                                                  -- Supported shapes:
 --                                                  --   { "TypeName", "GroupName", sortOrder }
 --                                                  --   { "ModName", "TypeName", "GroupName", sortOrder }
@@ -236,6 +241,30 @@ local function registerPerk(data)
                 2)
             return false
         end
+    end
+    if data.persistentSpells ~= nil then
+        if type(data.persistentSpells) ~= "table" and type(data.persistentSpells) ~= "function" then
+            error(
+                "registerPerk(" .. tostring(data.id) ..
+                ") perk data has a 'persistentSpells' field, which must be a table or a function returning a table.", 2)
+            return false
+        end
+        if type(data.persistentSpells) == "table" then
+            for index, spellId in ipairs(data.persistentSpells) do
+                if type(spellId) ~= "string" or spellId == "" then
+                    error(
+                        "registerPerk(" .. tostring(data.id) .. ") persistentSpells[" .. tostring(index) ..
+                        "] must be a non-empty spell ID string.", 2)
+                    return false
+                end
+            end
+        end
+    end
+    if data.graph ~= nil and type(data.graph) ~= "table" then
+        error(
+            "registerPerk(" .. tostring(data.id) ..
+            ") perk data has a 'graph' field, which must be a table.", 2)
+        return false
     end
 
     -- category is optional. It can be the legacy 3-element array
@@ -357,6 +386,173 @@ end
 --- @return table A list (array) of perk IDs (strings).
 local function getPerkIDs()
     return perkIDs
+end
+
+-- Uses a non-printing separator so human-readable category names cannot
+-- accidentally collide when concatenated into one registry key.
+local function constellationKey(modName, typeName, groupName)
+    return modName .. "\31" .. typeName .. "\31" .. groupName
+end
+
+--- Registers the visual definition for one constellation category.
+--- Positions are normalized `{ x, y }` points indexed either by perk ID or by
+--- the perk's sorted position inside the category.
+--- `texture` is an optional transparent symbol image and takes visual
+--- precedence when both forms are registered. `completedTexture` can provide
+--- a brighter replacement rendered only after the constellation is complete.
+--- `wireframe` is a fallback list of paths, with each path containing two or
+--- more normalized points.
+--- `ownedNodeColors` and `ownedLinks` let authored artwork light progressively
+--- as perks are acquired. `suppressInternalDependencyLines` hides only the
+--- framework's generated links inside this constellation; links to another
+--- constellation remain visible.
+--- @param data table Fields: mod, type, group, texture, completedTexture,
+--- positions, wireframe, ownedNodeColors, ownedLinks,
+--- suppressInternalDependencyLines, shapeSize.
+--- @return boolean success True after validation and registration.
+local function registerConstellation(data)
+    if type(data) ~= "table" then
+        error("registerConstellation() requires a data table.", 2)
+    end
+    for _, field in ipairs({ "mod", "type", "group" }) do
+        if type(data[field]) ~= "string" or data[field] == "" then
+            error("registerConstellation() requires a non-empty string '" .. field .. "'.", 2)
+        end
+    end
+    if data.texture ~= nil and type(data.texture) ~= "string" then
+        error("registerConstellation() texture must be a string when provided.", 2)
+    end
+    if data.completedTexture ~= nil and type(data.completedTexture) ~= "string" then
+        error("registerConstellation() completedTexture must be a string when provided.", 2)
+    end
+    if data.positions ~= nil and type(data.positions) ~= "table" then
+        error("registerConstellation() positions must be a table when provided.", 2)
+    end
+    if data.wireframe ~= nil and type(data.wireframe) ~= "table" then
+        error("registerConstellation() wireframe must be a table when provided.", 2)
+    end
+    if data.ownedNodeColors ~= nil and type(data.ownedNodeColors) ~= "table" then
+        error("registerConstellation() ownedNodeColors must be a table when provided.", 2)
+    end
+    if data.ownedLinks ~= nil and type(data.ownedLinks) ~= "table" then
+        error("registerConstellation() ownedLinks must be a table when provided.", 2)
+    end
+    if data.suppressInternalDependencyLines ~= nil
+        and type(data.suppressInternalDependencyLines) ~= "boolean" then
+        error("registerConstellation() suppressInternalDependencyLines must be a boolean when provided.", 2)
+    end
+    if data.shapeSize ~= nil and type(data.shapeSize) ~= "table" then
+        error("registerConstellation() shapeSize must be a table when provided.", 2)
+    end
+
+    local function copyPoint(point, label)
+        if type(point) ~= "table" then
+            error("registerConstellation() " .. label .. " must be a table.", 2)
+        end
+        local x = tonumber(point.x or point[1])
+        local y = tonumber(point.y or point[2])
+        if x == nil or y == nil then
+            error("registerConstellation() " .. label .. " requires numeric x and y.", 2)
+        end
+        return { x = x, y = y }
+    end
+
+    local positions = {}
+    for index, point in pairs(data.positions or {}) do
+        positions[index] = copyPoint(point, "position '" .. tostring(index) .. "'")
+    end
+
+    local wireframe = {}
+    for pathIndex, path in ipairs(data.wireframe or {}) do
+        if type(path) ~= "table" or #path < 2 then
+            error("registerConstellation() wireframe path " .. tostring(pathIndex)
+                .. " must contain at least two points.", 2)
+        end
+        local copiedPath = {}
+        for pointIndex, point in ipairs(path) do
+            table.insert(copiedPath, copyPoint(point,
+                "wireframe path " .. tostring(pathIndex) .. " point " .. tostring(pointIndex)))
+        end
+        table.insert(wireframe, copiedPath)
+    end
+
+    local function copyColor(color, label)
+        if type(color) ~= "table" then
+            error("registerConstellation() " .. label .. " must be a table.", 2)
+        end
+        local red = tonumber(color.r or color[1])
+        local green = tonumber(color.g or color[2])
+        local blue = tonumber(color.b or color[3])
+        if red == nil or green == nil or blue == nil then
+            error("registerConstellation() " .. label .. " requires numeric r, g, and b values.", 2)
+        end
+        if red < 0 or red > 1 or green < 0 or green > 1 or blue < 0 or blue > 1 then
+            error("registerConstellation() " .. label .. " values must be between 0 and 1.", 2)
+        end
+        return { r = red, g = green, b = blue }
+    end
+
+    local ownedNodeColors = {}
+    for perkId, color in pairs(data.ownedNodeColors or {}) do
+        if type(perkId) ~= "string" or perkId == "" then
+            error("registerConstellation() ownedNodeColors keys must be perk IDs.", 2)
+        end
+        ownedNodeColors[perkId] = copyColor(color,
+            "ownedNodeColors['" .. perkId .. "']")
+    end
+
+    local ownedLinks = {}
+    for linkIndex, link in ipairs(data.ownedLinks or {}) do
+        if type(link) ~= "table" then
+            error("registerConstellation() ownedLinks entry " .. tostring(linkIndex)
+                .. " must be a table.", 2)
+        end
+        if type(link.from) ~= "string" or link.from == ""
+            or type(link.to) ~= "string" or link.to == "" then
+            error("registerConstellation() ownedLinks entry " .. tostring(linkIndex)
+                .. " requires non-empty 'from' and 'to' perk IDs.", 2)
+        end
+        table.insert(ownedLinks, {
+            from = link.from,
+            to = link.to,
+            color = copyColor(link.color,
+                "ownedLinks entry " .. tostring(linkIndex) .. " color"),
+        })
+    end
+
+    local shapeSize
+    if data.shapeSize then
+        local width = tonumber(data.shapeSize.width or data.shapeSize[1])
+        local height = tonumber(data.shapeSize.height or data.shapeSize[2])
+        if width == nil or height == nil or width <= 0 or height <= 0 then
+            error("registerConstellation() shapeSize requires positive width and height.", 2)
+        end
+        shapeSize = { width = width, height = height }
+    end
+
+    constellationDefinitions[constellationKey(data.mod, data.type, data.group)] = {
+        mod = data.mod,
+        type = data.type,
+        group = data.group,
+        texture = data.texture,
+        completedTexture = data.completedTexture,
+        positions = positions,
+        wireframe = wireframe,
+        ownedNodeColors = ownedNodeColors,
+        ownedLinks = ownedLinks,
+        suppressInternalDependencyLines = data.suppressInternalDependencyLines == true,
+        shapeSize = shapeSize,
+    }
+    return true
+end
+
+--- Returns a mod-registered visual definition for one category.
+--- @return table|nil definition Registered constellation definition.
+local function getConstellation(modName, typeName, groupName)
+    if type(modName) ~= "string" or type(typeName) ~= "string" or type(groupName) ~= "string" then
+        return nil
+    end
+    return constellationDefinitions[constellationKey(modName, typeName, groupName)]
 end
 
 --- Gets the table of common requirement builder functions.
@@ -593,6 +789,59 @@ local function canAffordPerk(perk)
     return perk:cost() <= availablePointsForPerk(perk)
 end
 
+--- Returns owned perks that must be removed when one perk is refunded.
+--- Dependants are ordered before their prerequisites so onRemove callbacks run
+--- from the leaves of the dependency graph back to the requested node.
+--- @param perkID string Perk id being refunded.
+--- @return table perkIDs Ordered refund cascade, or an empty table when unowned.
+local function getPerkRefundCascade(perkID)
+    if type(perkID) ~= "string" or not playerHasPerk(perkID) then
+        return {}
+    end
+
+    local removeSet = { [perkID] = true }
+    local changed = true
+    while changed do
+        changed = false
+        for _, ownedId in ipairs(getPlayerPerks()) do
+            if not removeSet[ownedId] then
+                local ownedPerk = getPerk(ownedId)
+                if ownedPerk and not ownedPerk:dependenciesSatisfiedWithout(removeSet) then
+                    removeSet[ownedId] = true
+                    changed = true
+                end
+            end
+        end
+    end
+
+    local ordered = {}
+    local visited = {}
+    local function visit(id)
+        if visited[id] then return end
+        visited[id] = true
+        local perk = getPerk(id)
+        if perk then
+            for _, candidateId in ipairs(getPlayerPerks()) do
+                if removeSet[candidateId] and not visited[candidateId] then
+                    local candidate = getPerk(candidateId)
+                    if candidate then
+                        for _, dependencyId in ipairs(candidate:dependencies()) do
+                            if dependencyId == id then
+                                visit(candidateId)
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        table.insert(ordered, id)
+    end
+    visit(perkID)
+    for removedId in pairs(removeSet) do visit(removedId) end
+    return ordered
+end
+
 --- Grants a perk directly from trusted script code.
 --- Use this for trainers, dialogue rewards, quest rewards, or other acquisition
 --- paths that should not behave like a normal perk menu purchase. By default it
@@ -788,6 +1037,8 @@ return {
         getPerk = getPerk,
         isPerkRegistered = isPerkRegistered,
         getPerkIDs = getPerkIDs,
+        registerConstellation = registerConstellation,
+        getConstellation = getConstellation,
         requirements = requirements,
         getPlayerPerks = getPlayerPerks,
         getPlayerPerkSet = getPlayerPerkSet,
@@ -803,6 +1054,7 @@ return {
         availablePoints = availablePoints,
         availablePointsForPerk = availablePointsForPerk,
         canAffordPerk = canAffordPerk,
+        getPerkRefundCascade = getPerkRefundCascade,
         grantPerk = grantPerk,
         respecPerks = respecPerks,
         _setPlayerPerks = _setPlayerPerks,
