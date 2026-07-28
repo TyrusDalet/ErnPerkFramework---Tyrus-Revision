@@ -16,6 +16,7 @@ local self = require("openmw.self")
 local ui = require("openmw.ui")
 local util = require("openmw.util")
 local myui = require("scripts.ErnPerkFramework.pcp.myui")
+local mwuiConstants = require("scripts.omw.mwui.constants")
 
 local MOD_NAME = require("scripts.ErnPerkFramework.settings").MOD_NAME
 local localization = core.l10n(MOD_NAME)
@@ -38,8 +39,9 @@ local MAX_AUTHORED_SHAPE_SCALE = 1.25
 local MIN_ZOOM = 0.40
 local MAX_ZOOM = 1.80
 local ZOOM_STEP = 1.15
-local TOOLTIP_WIDTH = 390
-local MAX_TOOLTIP_HEIGHT = 340
+local TOOLTIP_BASE_WIDTH = 390
+local TOOLTIP_MIN_WIDTH = 280
+local TOOLTIP_BASE_TEXT_SIZE = 16
 local TOOLTIP_SCREEN_MARGIN = 20
 local FRAME_THICKNESS = 3
 local CONTROLLER_DEADZONE = 0.45
@@ -1139,16 +1141,42 @@ local function holdPercent()
     return math.min(1, hold.elapsed / HOLD_SECONDS)
 end
 
+--- Derives the tooltip's text and spacing measurements from OpenMW's active
+--- MWUI font size. GUI scaling is already represented by the layer's logical
+--- dimensions; these values account for a separately configured font size.
+local function tooltipMetrics()
+    local textSize = math.max(
+        1,
+        tonumber(mwuiConstants.textNormalSize) or TOOLTIP_BASE_TEXT_SIZE
+    )
+    local scale = textSize / TOOLTIP_BASE_TEXT_SIZE
+    return {
+        textSize = textSize,
+        scale = scale,
+        characterWidth = math.max(4, textSize * 0.5),
+        lineHeight = math.max(1, textSize + 2),
+        padding = math.max(8, math.ceil(12 * scale)),
+        gap = math.max(4, math.ceil(8 * scale)),
+        topPadding = math.max(7, math.ceil(10 * scale)),
+        headerHeight = math.max(textSize + 2, math.ceil(22 * scale)),
+        bottomPadding = math.max(8, math.ceil(12 * scale)),
+        cursorOffset = math.max(12, math.ceil(18 * scale)),
+        progressInset = math.max(6, math.ceil(9 * scale)),
+        progressHeight = math.max(3, math.ceil(3 * scale)),
+    }
+end
+
 --- Positions the independent perk tooltip beside the cursor, flipping it to
 --- the opposite side whenever the preferred placement would leave the screen.
 local function tooltipPosition(cursor)
     local screen = layerSize("Notification")
     local width = dimensions.tooltipWidth
     local height = dimensions.tooltipHeight
-    local x = cursor.x + 18
-    local y = cursor.y + 18
-    if x + width > screen.x - TOOLTIP_SCREEN_MARGIN then x = cursor.x - width - 18 end
-    if y + height > screen.y - TOOLTIP_SCREEN_MARGIN then y = cursor.y - height - 18 end
+    local offset = dimensions.tooltipCursorOffset or 18
+    local x = cursor.x + offset
+    local y = cursor.y + offset
+    if x + width > screen.x - TOOLTIP_SCREEN_MARGIN then x = cursor.x - width - offset end
+    if y + height > screen.y - TOOLTIP_SCREEN_MARGIN then y = cursor.y - height - offset end
     return v2(
         util.clamp(x, TOOLTIP_SCREEN_MARGIN,
             math.max(TOOLTIP_SCREEN_MARGIN, screen.x - width - TOOLTIP_SCREEN_MARGIN)),
@@ -1159,12 +1187,20 @@ end
 --- Recalculates tooltip limits from the current logical screen dimensions.
 --- This runs on every rebuild so resolution or UI-scale changes cannot leave
 --- an old panel size extending beyond the viewport.
-local function constrainTooltipDimensions()
+local function constrainTooltipDimensions(metrics)
+    metrics = metrics or tooltipMetrics()
     local screen = layerSize("Notification")
+    local preferredWidth = math.max(
+        TOOLTIP_MIN_WIDTH,
+        math.floor(TOOLTIP_BASE_WIDTH * metrics.scale + 0.5)
+    )
     dimensions.tooltipWidth = math.max(1,
-        math.min(TOOLTIP_WIDTH, screen.x - TOOLTIP_SCREEN_MARGIN * 2))
-    dimensions.tooltipMaxHeight = math.max(1,
-        math.min(MAX_TOOLTIP_HEIGHT, screen.y - TOOLTIP_SCREEN_MARGIN * 2))
+        math.min(preferredWidth, screen.x - TOOLTIP_SCREEN_MARGIN * 2))
+    dimensions.tooltipMaxHeight = math.max(
+        1,
+        screen.y - TOOLTIP_SCREEN_MARGIN * 2
+    )
+    dimensions.tooltipCursorOffset = metrics.cursorOffset
     dimensions.tooltipHeight = math.min(
         dimensions.tooltipHeight or dimensions.tooltipMaxHeight,
         dimensions.tooltipMaxHeight)
@@ -1173,14 +1209,18 @@ end
 --- Estimates the vertical space required by wrapped text. OpenMW does not
 --- expose text measurement here, so this deliberately uses a conservative
 --- character width and honours explicit line breaks in perk descriptions.
-local function wrappedLineCount(value, charsPerLine, maximum)
+---
+--- The result must remain uncapped: the tooltip renders the complete string,
+--- so silently limiting this estimate would size the frame for fewer lines
+--- than the text widget actually draws.
+local function wrappedLineCount(value, charsPerLine)
     local text = tostring(value or "")
     if text == "" then return 0 end
     local count = 0
     for line in (text .. "\n"):gmatch("(.-)\n") do
         count = count + math.max(1, math.ceil(#line / charsPerLine))
     end
-    return math.min(maximum, count)
+    return count
 end
 
 moveHover = function(cursor)
@@ -1196,7 +1236,8 @@ end
 local function buildHoverLayout()
     local perk = hoveredPerkId and interfaces.ErnPerkFramework.getPerk(hoveredPerkId) or nil
     if not perk or not lastCursorPosition then return nil end
-    constrainTooltipDimensions()
+    local metrics = tooltipMetrics()
+    constrainTooltipDimensions(metrics)
     local tooltipShade = {
         type = ui.TYPE.Image,
         props = {
@@ -1219,28 +1260,35 @@ local function buildHoverLayout()
     local flavour = perk:flavour() or ""
     local effectText = "Effects\n" .. perk:description():gsub("\f", "\n")
     local costText = "Cost: " .. tostring(perk:cost()) .. " " .. costName .. "    " .. statusText
-    local innerWidth = dimensions.tooltipWidth - 24
-    local charsPerLine = math.max(24, math.floor(innerWidth / 7))
-    local flavourHeight = wrappedLineCount(flavour, charsPerLine, 5) * 16
-    local effectHeight = math.max(32, wrappedLineCount(effectText, charsPerLine, 10) * 16)
-    local costHeight = math.max(20, wrappedLineCount(costText, charsPerLine, 2) * 16)
-    local desiredHeight = 38 + (flavourHeight > 0 and flavourHeight + 8 or 0)
-        + effectHeight + 8 + costHeight + 12
-    local overflow = math.max(0, desiredHeight - dimensions.tooltipMaxHeight)
-    local effectReduction = math.min(overflow, effectHeight - 32)
-    effectHeight = effectHeight - effectReduction
-    overflow = overflow - effectReduction
-    if flavourHeight > 0 and overflow > 0 then
-        flavourHeight = math.max(16, flavourHeight - overflow)
-    end
-    local cursorY = 38
+    local innerWidth = dimensions.tooltipWidth - metrics.padding * 2
+    local charsPerLine = math.max(
+        1,
+        math.floor(innerWidth / metrics.characterWidth)
+    )
+    local titleHeight = math.max(
+        metrics.headerHeight,
+        wrappedLineCount(perk:name(), charsPerLine) * metrics.lineHeight
+    )
+    local flavourHeight = wrappedLineCount(flavour, charsPerLine)
+        * metrics.lineHeight
+    local effectHeight = math.max(
+        metrics.lineHeight * 2,
+        wrappedLineCount(effectText, charsPerLine) * metrics.lineHeight
+    )
+    local costHeight = math.max(
+        metrics.lineHeight,
+        wrappedLineCount(costText, charsPerLine) * metrics.lineHeight
+    )
+    local cursorY = metrics.topPadding + titleHeight + metrics.gap
 
     content:add {
         type = ui.TYPE.Text,
         template = interfaces.MWUI.templates.textHeader,
         props = {
-            position = v2(12, 10), size = v2(dimensions.tooltipWidth - 24, 22),
+            position = v2(metrics.padding, metrics.topPadding),
+            size = v2(innerWidth, titleHeight),
             autoSize = false, wordWrap = true, text = perk:name(),
+            textSize = metrics.textSize,
         },
     }
     if flavourHeight > 0 then
@@ -1248,43 +1296,58 @@ local function buildHoverLayout()
             type = ui.TYPE.Text,
             template = interfaces.MWUI.templates.textNormal,
             props = {
-                position = v2(12, cursorY), size = v2(innerWidth, flavourHeight),
+                position = v2(metrics.padding, cursorY),
+                size = v2(innerWidth, flavourHeight),
                 autoSize = false, wordWrap = true,
                 textColor = COLOR_FLAVOUR,
                 text = flavour,
+                textSize = metrics.textSize,
             },
         }
-        cursorY = cursorY + flavourHeight + 8
+        cursorY = cursorY + flavourHeight + metrics.gap
     end
     content:add {
         type = ui.TYPE.Text,
         template = interfaces.MWUI.templates.textNormal,
         props = {
-            position = v2(12, cursorY), size = v2(innerWidth, effectHeight),
+            position = v2(metrics.padding, cursorY),
+            size = v2(innerWidth, effectHeight),
             autoSize = false, wordWrap = true,
             text = effectText,
+            textSize = metrics.textSize,
         },
     }
-    cursorY = cursorY + effectHeight + 8
+    cursorY = cursorY + effectHeight + metrics.gap
     content:add {
         type = ui.TYPE.Text,
         template = interfaces.MWUI.templates.textNormal,
         props = {
-            position = v2(12, cursorY), size = v2(innerWidth, costHeight),
+            position = v2(metrics.padding, cursorY),
+            size = v2(innerWidth, costHeight),
             autoSize = false, wordWrap = true,
             text = costText,
+            textSize = metrics.textSize,
         },
     }
     cursorY = cursorY + costHeight
-    dimensions.tooltipHeight = math.min(dimensions.tooltipMaxHeight, cursorY + 12)
+    dimensions.tooltipHeight = math.min(
+        dimensions.tooltipMaxHeight,
+        cursorY + metrics.bottomPadding
+    )
     tooltipShade.props.size = v2(dimensions.tooltipWidth, dimensions.tooltipHeight)
     content:add(fixedFrame(dimensions.tooltipWidth, dimensions.tooltipHeight))
     if hold and hold.perkId == perk:id() then
         content:add {
             type = ui.TYPE.Image,
             props = {
-                position = v2(12, dimensions.tooltipHeight - 9),
-                size = v2((dimensions.tooltipWidth - 24) * holdPercent(), 3),
+                position = v2(
+                    metrics.padding,
+                    dimensions.tooltipHeight - metrics.progressInset
+                ),
+                size = v2(
+                    innerWidth * holdPercent(),
+                    metrics.progressHeight
+                ),
                 resource = horizontalLine,
                 tileH = true,
                 color = hold.button == 1 and COLOR_AVAILABLE or COLOR_OWNED,
