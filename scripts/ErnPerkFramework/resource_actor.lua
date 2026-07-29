@@ -13,6 +13,17 @@ local calculation = require("scripts.ErnPerkFramework.calculation")
 local self = require("openmw.self")
 local types = require("openmw.types")
 
+--- Reports the actual target-local resource write to an interested caller.
+--- This distinguishes a queued cross-actor request from one that reached the
+--- actor and lets perk diagnostics compare the resolved and observed deltas.
+local function reportResult(data, result)
+    local recipient = data.resultTarget
+    if recipient == nil or not recipient:isValid() or data.resultEvent == nil then
+        return
+    end
+    recipient:sendEvent(data.resultEvent, result)
+end
+
 --- Applies framework resource damage/restoration from the target actor script.
 --- @param data table resource, operation, amount, source, sourceEffect, damageType.
 --- @return number amount Final resolved amount applied.
@@ -23,15 +34,14 @@ local function applyActorResourceDelta(data)
         return 0
     end
 
-    local healthBefore = nil
-    if data.resource == nil or data.resource == "health" then
-        healthBefore = types.Actor.stats.dynamic.health(self).current
-    end
-
-    local applied = calculation.applyActorResourceDelta({
+    local resource = data.resource or "health"
+    local operation = data.operation or data.kind or calculation.RESOURCE_OPERATION.Damage
+    local stat = types.Actor.stats.dynamic[resource](self)
+    local before = stat.current
+    local ok, applied = pcall(calculation.applyActorResourceDelta, {
         actor = self,
-        resource = data.resource or "health",
-        operation = data.operation or data.kind or calculation.RESOURCE_OPERATION.Damage,
+        resource = resource,
+        operation = operation,
         amount = amount,
         source = data.source,
         sourceEffect = data.sourceEffect,
@@ -42,17 +52,37 @@ local function applyActorResourceDelta(data)
         min = data.min,
         max = data.max,
     })
+    local after = types.Actor.stats.dynamic[resource](self).current
+
+    reportResult(data, {
+        requestId = data.requestId,
+        target = self,
+        targetId = self.id,
+        resource = resource,
+        operation = operation,
+        requested = amount,
+        resolved = ok and applied or 0,
+        before = before,
+        after = after,
+        observed = operation == calculation.RESOURCE_OPERATION.Damage
+            and (before - after)
+            or (after - before),
+        sourceEffect = data.sourceEffect,
+        contributors = data.metadata and data.metadata.contributors or nil,
+        success = ok,
+        error = ok and nil or tostring(applied),
+    })
+
+    if not ok then
+        error(applied, 0)
+    end
 
     if data.sourceEffect == "FactionPerks_IL_LegionaryResolve" then
-        local healthAfter = healthBefore
-        if healthBefore ~= nil then
-            healthAfter = types.Actor.stats.dynamic.health(self).current
-        end
         print("ErnPerkFramework resource actor applied Shield Wall amount="
             .. tostring(amount)
             .. " resolved=" .. tostring(applied)
-            .. " healthBefore=" .. tostring(healthBefore)
-            .. " healthAfter=" .. tostring(healthAfter))
+            .. " healthBefore=" .. tostring(before)
+            .. " healthAfter=" .. tostring(after))
     end
 
     return applied

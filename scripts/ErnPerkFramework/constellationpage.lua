@@ -1741,6 +1741,10 @@ local function processControllerInput(dt)
 end
 
 close = function()
+    -- Escape removes Interface mode before its key-release frame arrives.
+    -- Clear the pending release here so reopening cannot immediately consume
+    -- the old press and close the newly-created menu.
+    escapeHeld = false
     if hoverElement then
         hoverElement:destroy()
         hoverElement = nil

@@ -21,6 +21,13 @@ local OPERATION = {
     Modifier = "Modifier",
 }
 
+local DIRECTION = {
+    Any = "any",
+    Incoming = "incoming",
+    Outgoing = "outgoing",
+    Other = "other",
+}
+
 local CALCULATION = {
     HIT_DAMAGE_HEALTH = "hit.damage.health",
     HIT_DAMAGE_FATIGUE = "hit.damage.fatigue",
@@ -126,13 +133,20 @@ local function validateRegistration(data, handler)
     if data.priority ~= nil and type(data.priority) ~= "number" then
         error("registerCalculationHandler() priority must be a number when provided.", 3)
     end
+    if data.direction ~= nil
+            and data.direction ~= DIRECTION.Any
+            and data.direction ~= DIRECTION.Incoming
+            and data.direction ~= DIRECTION.Outgoing
+            and data.direction ~= DIRECTION.Other then
+        error("registerCalculationHandler() direction must be any, incoming, outgoing, or other.", 3)
+    end
 
     return data, handler
 end
 
 --- Registers one contribution to a named calculation channel.
 --- Duplicate ids replace previous registrations within the same calculation.
---- @param data table Registration data: id, calculation, operation, priority.
+--- @param data table Registration data: id, calculation, operation, priority, direction.
 --- @param handler function|nil Callback receiving calculation context.
 --- @return boolean success Always true after successful validation.
 local function registerCalculationHandler(data, handler)
@@ -150,6 +164,7 @@ local function registerCalculationHandler(data, handler)
         calculation = data.calculation,
         operation = data.operation,
         priority = data.priority or DEFAULT_PRIORITY,
+        direction = data.direction or DIRECTION.Any,
         order = nextOrder,
         handler = handler,
     })
@@ -236,7 +251,9 @@ local function clamp(value, minValue, maxValue)
 end
 
 --- Resolves a named calculation through all registered operation buckets.
---- @param data table Resolution data: calculation, baseValue, actor, source, context, min, max.
+--- A direction can be supplied for hit calculations so offensive and
+--- defensive modifiers share the same channel without affecting each other.
+--- @param data table Resolution data: calculation, baseValue, actor, source, context, direction, min, max.
 --- @return number value Final resolved value.
 local function resolveCalculation(data)
     if data == nil or type(data) ~= "table" then
@@ -255,6 +272,9 @@ local function resolveCalculation(data)
         error("resolveCalculation() requires a numeric baseValue.", 2)
     end
 
+    local direction = data.direction
+        or (type(data.context) == "table" and data.context.perkFrameworkHitDirection)
+        or DIRECTION.Any
     local context = {
         calculation = calculation,
         baseValue = value,
@@ -263,6 +283,7 @@ local function resolveCalculation(data)
         source = data.source,
         context = data.context,
         metadata = data.metadata or {},
+        direction = direction,
     }
 
     local byOperation = handlersByCalculation[calculation]
@@ -274,13 +295,15 @@ local function resolveCalculation(data)
         local list = byOperation[operation]
         if list then
             for _, entry in ipairs(list) do
-                context.value = value
-                local ok, result = pcall(entry.handler, context)
-                if ok then
-                    value = applyOperation(value, operation, contributionValue(result))
-                    value = clamp(value, data.min, data.max)
-                else
-                    print("ErnPerkFramework calculation handler failed (" .. tostring(entry.id) .. "): " .. tostring(result))
+                if entry.direction == DIRECTION.Any or entry.direction == direction then
+                    context.value = value
+                    local ok, result = pcall(entry.handler, context)
+                    if ok then
+                        value = applyOperation(value, operation, contributionValue(result))
+                        value = clamp(value, data.min, data.max)
+                    else
+                        print("ErnPerkFramework calculation handler failed (" .. tostring(entry.id) .. "): " .. tostring(result))
+                    end
                 end
             end
         end
@@ -357,6 +380,7 @@ local function getCalculationHandlers(calculation)
                     calculation = calc,
                     operation = entry.operation,
                     priority = entry.priority,
+                    direction = entry.direction,
                 })
             end
         end
@@ -377,6 +401,7 @@ end
 
 return {
     OPERATION = OPERATION,
+    DIRECTION = DIRECTION,
     CALCULATION = CALCULATION,
     RESOURCE_OPERATION = RESOURCE_OPERATION,
     DEFAULT_CALCULATION_PRIORITY = DEFAULT_PRIORITY,

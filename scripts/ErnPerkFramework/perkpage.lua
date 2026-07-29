@@ -1469,7 +1469,33 @@ perkList = list.NewList(
 --  CLOSE UI
 -- ============================================================
 
+-- Input actions fire on release. OpenMW can remove Interface mode before that
+-- release is observed, so teardown must discard every pending action rather
+-- than carrying it into the next menu session.
+local keyDownHeld       = 0
+local keyUpHeld         = 0
+local keyLeftHeld       = 0
+local keyRightHeld      = 0
+local keyDropdownStatus = false
+local keyDescPrevStatus = false
+local keyDescNextStatus = false
+local keyEnterStatus    = false
+local keyEscapeStatus   = false
+
+local function resetMenuInputState()
+    keyDownHeld = 0
+    keyUpHeld = 0
+    keyLeftHeld = 0
+    keyRightHeld = 0
+    keyDropdownStatus = false
+    keyDescPrevStatus = false
+    keyDescNextStatus = false
+    keyEnterStatus = false
+    keyEscapeStatus = false
+end
+
 local function closeUI()
+    resetMenuInputState()
     if constellationPage.isOpen() then
         constellationPage.close()
     end
@@ -1780,6 +1806,7 @@ local debounce = 0
 
 local function showPerkUI(data)
     data = data or {}
+    resetMenuInputState()
 
     if settings.constellationMenuEnabled == true then
         if menu ~= nil then closeUI() end
@@ -1886,18 +1913,6 @@ end
 local KEY_REPEAT_INITIAL  = 20
 -- Frames between subsequent auto-repeats while held
 local KEY_REPEAT_INTERVAL = 6
-
-local keyDownHeld   = 0   -- frames DownArrow / DPad Down has been held
-local keyUpHeld     = 0   -- frames UpArrow   / DPad Up   has been held
-local keyLeftHeld   = 0   -- frames LeftArrow / DPad Left  has been held
-local keyRightHeld  = 0   -- frames RightArrow/ DPad Right has been held
-
--- Fire-on-release booleans (set on press, consumed on release)
-local keyDropdownStatus = false
-local keyDescPrevStatus = false
-local keyDescNextStatus = false
-local keyEnterStatus    = false
-local keyEscapeStatus   = false
 
 -- Helper: returns true on the frame a held counter should fire.
 -- Fires immediately on frame 1, then again after INITIAL, then every INTERVAL.

@@ -335,8 +335,9 @@ one ordered event pipeline for the same attack record:
 interfaces.ErnPerkFramework.registerOnHitHandler({
     id = "MyMod_my_hit_effect",
     priority = 200,
+    direction = interfaces.ErnPerkFramework.HIT_DIRECTION.Outgoing,
 }, function(attack, context)
-    -- inspect or modify attack here
+    -- Detect the hit or contribute side effects here.
 end)
 ```
 
@@ -345,8 +346,60 @@ counterattacks, and final feedback or proc effects later. The same API is
 available in `PLAYER`, `NPC`, and `CREATURE` scripts when this framework's
 omwscripts file is loaded.
 
+Infrastructure bridges that must inspect the original engine payload before
+direction filtering or duplicate suppression can register a raw observer:
+
+```lua
+interfaces.ErnPerkFramework.registerRawOnHitObserver({
+    id = "MyMod_target_bridge",
+    priority = 100,
+}, function(attack, context)
+    -- Establish ownership or relay diagnostics from the untouched payload.
+end)
+```
+
+Raw observers run inside the same single OpenMW hit hook as normal handlers.
+They should only observe or relay the payload; gameplay arithmetic and ordered
+perk effects still belong in `registerOnHitHandler` and the calculation
+resolver. Use `unregisterRawOnHitObserver` and `getRawOnHitObservers` for
+lifecycle management and diagnostics.
+
+`direction` may be `HIT_DIRECTION.Incoming`, `Outgoing`, `Other`, or `Any`.
+It defaults to `Any`. Direction filters prevent player-defence handlers from
+running against outgoing hits forwarded by another local-script context.
+
+The framework captures the target's dynamic resources before hit arithmetic
+or engine damage changes them. Handlers can read
+`context.preHitResources.health`, `.fatigue`, or `.magicka`. Each available
+entry contains `base`, `modifier`, `current`, `maximum`, and `ratio`. The same
+table is retained on `attack.perkFrameworkPreHitResources` when a mod bridges
+the hit into another local-script context, allowing reliable killing-blow and
+resource-threshold checks without polling after damage.
+
 Hit event handlers are for detection and side effects. Actor-affecting values
 that multiple mods may change should use the calculation resolver below.
+Handlers that need to observe the final resolved hit can defer work without
+installing another OpenMW hook:
+
+```lua
+context.afterResolve(function(finalAttack)
+    -- Read finalAttack.damage after every calculation handler has run.
+end)
+```
+
+Additional damage that belongs to the current hit should be contributed with
+`addHitDamage` rather than sent to the target immediately:
+
+```lua
+interfaces.ErnPerkFramework.addHitDamage(attack, "health", bonusDamage, {
+    sourceEffect = "MyMod_heavy_strike",
+})
+```
+
+The framework collects all health, fatigue, and magicka additions, resolves
+them in the normal arithmetic order, and leaves the caller responsible for
+applying a copied or forwarded hit's final difference. SkillPerks Core 0 does
+this automatically for its target-to-player hit bridge.
 
 ### Calculation Resolver
 
@@ -369,6 +422,7 @@ interfaces.ErnPerkFramework.registerCalculationHandler({
     calculation = "hit.damage.health",
     operation = "Divider",
     priority = 100,
+    direction = interfaces.ErnPerkFramework.HIT_DIRECTION.Incoming,
 }, function(data)
     if data.actor == nil then return end
     return 1.25
@@ -397,6 +451,10 @@ hit.damage.health
 hit.damage.fatigue
 hit.damage.magicka
 ```
+
+Hit calculation registrations accept the same optional `direction` field as
+on-hit registrations. The resolved callback data also exposes `data.direction`.
+Non-hit calculation channels normally omit it and continue to match `Any`.
 
 Separate flat damage effects should resolve through:
 

@@ -1031,6 +1031,7 @@ end
 return {
     interfaceName = MOD_NAME,
     interface = {
+        HIT_BRIDGE_REVISION = combat.HIT_BRIDGE_REVISION,
         version = version,
         registerPerk = registerPerk,
         getPerks = getPerks,
@@ -1061,6 +1062,7 @@ return {
         currentSpentPoints = currentSpentPoints,
         totalAllowedPoints = totalAllowedPoints,
         DEFAULT_ON_HIT_PRIORITY = combat.DEFAULT_ON_HIT_PRIORITY,
+        HIT_DIRECTION = combat.HIT_DIRECTION,
         DEFAULT_CALCULATION_PRIORITY = calculation.DEFAULT_CALCULATION_PRIORITY,
         DEFAULT_SKILL_USE_PRIORITY = skill.DEFAULT_SKILL_USE_PRIORITY,
         CALCULATION_OPERATION = calculation.OPERATION,
@@ -1070,6 +1072,12 @@ return {
         registerOnHitHandler = combat.registerOnHitHandler,
         unregisterOnHitHandler = combat.unregisterOnHitHandler,
         getOnHitHandlers = combat.getOnHitHandlers,
+        registerRawOnHitObserver = combat.registerRawOnHitObserver,
+        unregisterRawOnHitObserver = combat.unregisterRawOnHitObserver,
+        getRawOnHitObservers = combat.getRawOnHitObservers,
+        getHitDirection = combat.getHitDirection,
+        dispatchOnHit = combat.dispatchOnHit,
+        addHitDamage = combat.addHitDamage,
         registerCalculationHandler = calculation.registerCalculationHandler,
         unregisterCalculationHandler = calculation.unregisterCalculationHandler,
         resolveCalculation = calculation.resolveCalculation,
