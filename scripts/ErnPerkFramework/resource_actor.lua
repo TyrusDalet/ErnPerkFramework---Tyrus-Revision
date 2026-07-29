@@ -53,6 +53,21 @@ local function applyActorResourceDelta(data)
         max = data.max,
     })
     local after = types.Actor.stats.dynamic[resource](self).current
+    local metadata = data.metadata or {}
+    local resolvedExtra = ok and applied or 0
+    local observedExtra = operation == calculation.RESOURCE_OPERATION.Damage
+        and (before - after)
+        or (after - before)
+    local baseDamage = tonumber(metadata.baseDamage) or 0
+    local preHitCurrent = tonumber(metadata.preHitCurrent)
+    local totalObserved
+    if operation == calculation.RESOURCE_OPERATION.Damage then
+        totalObserved = preHitCurrent
+            and math.max(0, preHitCurrent - after)
+            or math.max(0, baseDamage + observedExtra)
+    else
+        totalObserved = observedExtra
+    end
 
     reportResult(data, {
         requestId = data.requestId,
@@ -61,14 +76,21 @@ local function applyActorResourceDelta(data)
         resource = resource,
         operation = operation,
         requested = amount,
-        resolved = ok and applied or 0,
+        resolved = resolvedExtra,
         before = before,
         after = after,
-        observed = operation == calculation.RESOURCE_OPERATION.Damage
-            and (before - after)
-            or (after - before),
+        observed = observedExtra,
+        baseDamage = baseDamage,
+        totalRequested = tonumber(metadata.requestedTotal)
+            or (baseDamage + amount),
+        totalResolved = baseDamage + resolvedExtra,
+        totalObserved = totalObserved,
+        rawContributionTotal = tonumber(metadata.rawContributionTotal) or 0,
+        calculationAdjustment = tonumber(metadata.calculationAdjustment) or 0,
+        resourceAdjustment = resolvedExtra - amount,
         sourceEffect = data.sourceEffect,
-        contributors = data.metadata and data.metadata.contributors or nil,
+        contributors = metadata.contributors,
+        contributionDetails = metadata.contributionDetails,
         success = ok,
         error = ok and nil or tostring(applied),
     })

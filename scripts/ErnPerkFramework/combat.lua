@@ -12,7 +12,6 @@ engine resolves the final result.
 
 local interfaces = require("openmw.interfaces")
 local core = require("openmw.core")
-local nearby = require("openmw.nearby")
 local pself = require("openmw.self")
 local types = require("openmw.types")
 local calculation = require("scripts.ErnPerkFramework.calculation")
@@ -32,9 +31,7 @@ local nextRawObserverOrder = 0
 local hookInstalled = false
 local lastDispatch = nil
 local DUPLICATE_WINDOW = 0.15
-local PLAYER_UNARMED_HIT_EVENT = "ErnPerkFramework_PlayerUnarmedHit"
-local RAW_UNARMED_CANDIDATE_EVENT = "ErnPerkFramework_RawUnarmedCandidate"
-local HIT_BRIDGE_REVISION = 5
+local HIT_BRIDGE_REVISION = 6
 
 --- Recognizes a Player GameObject through the engine type field, while also
 --- accepting wrapper variants supported by the type API predicate.
@@ -76,78 +73,17 @@ local function sameObject(left, right)
     return isPlayerObject(left) and isPlayerObject(right)
 end
 
---- Forwards the engine's authoritative player H2H payload from the struck
---- actor to player scripts. Weapon hits can be attributed through their item;
---- unarmed hits need this route because there is deliberately no weapon
---- fallback. The receiving perk runtime performs cross-route deduplication.
---- @param attack table Native Combat.onHit payload.
---- @param target GameObject Actor whose local Combat hook received the hit.
-local function forwardPlayerUnarmedHit(attack, target)
-    if not isPlayerObject(attack.attacker)
-            or sameObject(attack.attacker, target)
-            or attack.weapon ~= nil
-            or attack.sourceType == interfaces.Combat.ATTACK_SOURCE_TYPES.Magic
-            or attack.sourceType == interfaces.Combat.ATTACK_SOURCE_TYPES.Ranged then
-        return false
+--- Compares optional object handles while preserving nil-to-nil equality.
+--- Hit payloads can omit the attacker or weapon, so duplicate detection must
+--- distinguish two absent handles from one absent and one present handle.
+--- @param left GameObject|nil First optional object handle.
+--- @param right GameObject|nil Second optional object handle.
+--- @return boolean same
+local function sameOptionalObject(left, right)
+    if left == nil or right == nil then
+        return left == nil and right == nil
     end
-
-    local damage = attack.damage or {}
-    attack.attacker:sendEvent(PLAYER_UNARMED_HIT_EVENT, {
-        attacker = attack.attacker,
-        target = target,
-        successful = attack.successful,
-        damage = {
-            health = damage.health,
-            fatigue = damage.fatigue,
-            magicka = damage.magicka,
-        },
-        strength = attack.strength,
-        windUp = attack.windUp,
-        type = attack.type,
-        sourceType = attack.sourceType,
-        critical = attack.critical,
-        isCritical = attack.isCritical,
-        perkFrameworkPreHitResources = attack.perkFrameworkPreHitResources,
-        perkFrameworkTargetBridge = "unarmed-engine-hit",
-    })
-    return true
-end
-
---- Reports any otherwise-unforwarded hit received while the nearby player is
---- unarmed. This diagnostic deliberately retains unexpected attackers,
---- weapons, and source types so a malformed native payload cannot disappear
---- before the player-side trace explains why it was rejected.
-local function reportRawUnarmedCandidate(attack, target)
-    local player = nearby.players[1]
-    if player == nil or sameObject(player, target) then
-        return
-    end
-    local equipmentOk, rightHand = pcall(
-        types.Actor.getEquipment,
-        player,
-        types.Actor.EQUIPMENT_SLOT.CarriedRight
-    )
-    if not equipmentOk or rightHand ~= nil then
-        return
-    end
-
-    local damage = attack.damage or {}
-    player:sendEvent(RAW_UNARMED_CANDIDATE_EVENT, {
-        attacker = attack.attacker,
-        target = target,
-        successful = attack.successful,
-        damage = {
-            health = damage.health,
-            fatigue = damage.fatigue,
-            magicka = damage.magicka,
-        },
-        weapon = attack.weapon,
-        strength = attack.strength,
-        windUp = attack.windUp,
-        type = attack.type,
-        sourceType = attack.sourceType,
-        perkFrameworkBridgeRevision = HIT_BRIDGE_REVISION,
-    })
+    return sameObject(left, right)
 end
 
 --- Adds a perk's arithmetic contribution to the current hit. Contributions
@@ -290,9 +226,9 @@ local function isDuplicateHit(attack, now)
     if not previous or now - previous.time > DUPLICATE_WINDOW then
         return false
     end
-    return previous.attacker == attack.attacker
-        and previous.target == (attack.target or attack.victim or attack.defender)
-        and previous.weapon == attack.weapon
+    return sameOptionalObject(previous.attacker, attack.attacker)
+        and sameOptionalObject(previous.target, attack.target or attack.victim or attack.defender)
+        and sameOptionalObject(previous.weapon, attack.weapon)
         and previous.successful == attack.successful
         and previous.attackType == attack.type
         and previous.strength == attack.strength
@@ -338,12 +274,6 @@ local function dispatchOnHit(attack, options)
     local rawTarget = options.target or attack.target or attack.victim or attack.defender or pself
     attack.perkFrameworkPreHitResources = attack.perkFrameworkPreHitResources
         or snapshotDynamicResources(rawTarget)
-    if options.forwarded ~= true then
-        local forwardedPlayerUnarmedHit = forwardPlayerUnarmedHit(attack, rawTarget)
-        if not forwardedPlayerUnarmedHit then
-            reportRawUnarmedCandidate(attack, rawTarget)
-        end
-    end
     local rawDirection = getHitDirection(attack, options)
     local rawContext = {
         self = pself,
