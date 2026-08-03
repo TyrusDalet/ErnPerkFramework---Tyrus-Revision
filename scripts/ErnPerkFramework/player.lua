@@ -327,6 +327,87 @@ local function dumpPlayerPerks()
     end
 end
 
+--- Rebuilds every currently owned perk through its normal lifecycle.
+--- The ordered ownership list is the purchase history: respec clears it and
+--- refunds its derived resource spending, then grantPerk repurchases entries
+--- in the same order. A previously owned perk may bypass requirements when a
+--- normal purchase fails, which preserves dialogue rewards and hidden perks;
+--- real costs are always checked and therefore spent again.
+local function reloadPlayerPerks()
+    local purchaseOrder = {}
+    for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
+        purchaseOrder[#purchaseOrder + 1] = perkID
+    end
+    if #purchaseOrder == 0 then
+        consolePrint("Perk Reload: no owned perks to rebuild.")
+        return
+    end
+
+    -- Do not destroy ownership when one provider has not registered yet.
+    -- This commonly occurs for a missing optional Core or during load order
+    -- initialization and cannot be repaired through normal acquisition.
+    for _, perkID in ipairs(purchaseOrder) do
+        if interfaces.ErnPerkFramework.getPerk(perkID) == nil then
+            consolePrint("Perk Reload aborted: " .. tostring(perkID)
+                .. " is not currently registered.")
+            return
+        end
+    end
+
+    consolePrint("Perk Reload: rebuilding " .. tostring(#purchaseOrder)
+        .. " owned perks in acquisition order.")
+    syncCoroutine = nil
+    pendingInitialReapply = {}
+    observedOwnedPerks = {}
+    interfaces.ErnPerkFramework.respecPerks()
+
+    local restored = 0
+    local forced = 0
+    local failed = 0
+    for index, perkID in ipairs(purchaseOrder) do
+        local callOk, success, reason = pcall(
+            interfaces.ErnPerkFramework.grantPerk,
+            perkID,
+            { checkRequirements = true, checkCost = true }
+        )
+        local forcedThisPerk = false
+        if callOk and not success and reason == "requirements" then
+            callOk, success, reason = pcall(
+                interfaces.ErnPerkFramework.grantPerk,
+                perkID,
+                { checkRequirements = false, checkCost = true }
+            )
+            forcedThisPerk = callOk and success == true
+        end
+
+        -- grantPerk records ownership before onAdd. If a callback throws, keep
+        -- that truthful ownership/cost result but report the callback failure.
+        local owned = interfaces.ErnPerkFramework.playerHasPerk(perkID)
+        if success == true or (not callOk and owned) then
+            restored = restored + 1
+            if forcedThisPerk then forced = forced + 1 end
+            observedOwnedPerks[perkID] = true
+            pendingInitialReapply[perkID] = nil
+            if not callOk then
+                failed = failed + 1
+                consolePrint("Perk Reload warning at " .. tostring(index)
+                    .. ": " .. tostring(perkID)
+                    .. " was restored but onAdd failed: " .. tostring(success))
+            end
+        else
+            failed = failed + 1
+            consolePrint("Perk Reload failed at " .. tostring(index)
+                .. ": " .. tostring(perkID)
+                .. " reason=" .. tostring(callOk and reason or success))
+        end
+    end
+
+    remainingDT = 0
+    consolePrint("Perk Reload complete: restored=" .. tostring(restored)
+        .. " forced=" .. tostring(forced)
+        .. " failed=" .. tostring(failed) .. ".")
+end
+
 --- Normalizes player-entered console commands before matching.
 --- Some OpenMW console paths deliver commands with a trailing "\" marker;
 --- strip it so `luaperks menu\` behaves exactly like `luaperks menu`.
@@ -354,6 +435,7 @@ local function onConsoleCommand(mode, command, selectedObject)
     end
     local show = getSuffixForCmd("luaperks menu")
     local respec = command:lower() == "luaperks respec"
+    local reload = command:lower() == "luaperks reload"
     local dump = command:lower() == "luaperks dump"
 
     if show ~= nil then
@@ -371,6 +453,8 @@ local function onConsoleCommand(mode, command, selectedObject)
         observedOwnedPerks = {}
         interfaces.ErnPerkFramework.respecPerks()
         remainingDT = 0
+    elseif reload then
+        reloadPlayerPerks()
     elseif dump then
         dumpPlayerPerks()
     end

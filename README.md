@@ -8,6 +8,10 @@ A perk selection window will pop up after your level up window (for NCGDMW users
 - You can adjust the perk points per level in the mod settings.
 - If you no longer meet the requirements for a perk, it will be removed and you will be refunded.
 - If you want to respec, bring up the console and type `luaperks respec`.
+- If perk effects need to be rebuilt without changing your choices, type
+  `luaperks reload`. The Framework refunds and repurchases your owned perks in
+  their original acquisition order, preserving previously earned hidden or
+  dialogue-granted perks while still reapplying their real costs.
 - If you want to manually bring up the perk window, bring up the console and type `luaperks menu`.
 - Enable **Constellation Perk Menu** to use the experimental pannable graph
   instead of the classic list. Drag empty space to pan and use the mouse wheel
@@ -500,6 +504,7 @@ interfaces.ErnPerkFramework.registerSkillUseHandler({
     -- event.skillId
     -- event.spell
     -- event.cost
+    -- event.magickaBeforeCast
     -- event.sourceType = "spell", "enchantment", or "unknown"
     -- event.isPlayerCast
     -- event.enchantedItem
@@ -511,6 +516,10 @@ spells and powers that the player knows and deliberately casts. It excludes
 passive abilities, diseases, blights, curses, enchanted item casts, and
 unknown sources. Generated normal-spell records can participate when another
 mod adds them to the player's spellbook.
+
+`event.magickaBeforeCast` is captured at the spellcast animation's start key.
+Refund mechanics can compare it with the player's later Magicka value to
+prevent multiple refunds from restoring more than the cast actually spent.
 
 Enchant effects can resolve self-targeting magnitude through:
 

@@ -79,10 +79,12 @@ local function captureSpellcast(groupname, key)
     if SPELLCAST_START_KEYS[key] then
         local enchantedItem = selectedEnchantedItem()
         local spell = types.Player.getSelectedSpell(pself)
+        local magicka = types.Actor.stats.dynamic.magicka(pself)
         lastSpellCast = {
             spell = spell,
             cost = spell and spell.cost or 0,
             enchantedItem = enchantedItem,
+            magickaBeforeCast = magicka and magicka.current,
             sourceType = enchantedItem and SOURCE_TYPE.Enchantment or SOURCE_TYPE.Spell,
             isPlayerCast = spell ~= nil and enchantedItem == nil and playerKnowsSpell(spell),
         }
@@ -100,6 +102,9 @@ local function dispatchSkillUsed(skillId, params)
         spell = cast.spell,
         cost = cast.cost or 0,
         enchantedItem = cast.enchantedItem,
+        -- Captured at the animation's cast-start key, before successful-cast
+        -- handlers and refund mechanics begin changing the resource.
+        magickaBeforeCast = cast.magickaBeforeCast,
         sourceType = cast.sourceType or SOURCE_TYPE.Unknown,
         isPlayerCast = cast.isPlayerCast == true,
     }
