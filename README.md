@@ -11,7 +11,11 @@ A perk selection window will pop up after your level up window (for NCGDMW users
 - If perk effects need to be rebuilt without changing your choices, type
   `luaperks reload`. The Framework refunds and repurchases your owned perks in
   their original acquisition order, preserving previously earned hidden or
-  dialogue-granted perks while still reapplying their real costs.
+  dialogue-granted perks while still reapplying their real costs. Close the
+  console after entering the command; the rebuild runs in bounded batches.
+- Perk packs can request that same rebuild after a version update. Automatic
+  requests wait for the Framework's current synchronization pass to finish and
+  report whether every owned perk was restored successfully.
 - If you want to manually bring up the perk window, bring up the console and type `luaperks menu`.
 - Enable **Constellation Perk Menu** to use the experimental pannable graph
   instead of the classic list. Drag empty space to pan and use the mouse wheel
@@ -330,6 +334,29 @@ validation. It updates the persistent player perk list and calls the perk's
 `onAdd` handler exactly like a normal purchase.
 
 ### Runtime Interop Hooks
+
+#### Queued Perk Rebuilds
+
+Player scripts can request the same lifecycle rebuild as `luaperks reload` by
+sending `ErnPerkFramework_RequestPlayerPerkReload` to the player:
+
+```lua
+self:sendEvent("ErnPerkFramework_RequestPlayerPerkReload", {
+    requestId = "MyMod_1.2.0",
+    source = "MyMod",
+    requestedVersion = "1.2.0",
+    resultEvent = "MyMod_PerkReloadResult",
+})
+```
+
+The Framework waits for any active perk synchronization coroutine and then
+processes removals and repurchases in bounded batches across update frames.
+Normal synchronization remains suspended until the original acquisition order
+has been restored. `resultEvent` receives
+`success`, `reason`, `restored`, `forced`, `failed`, and the supplied request
+metadata. A provider that tracks save versions should update its saved version
+only when `success` is true. Missing registered perks abort before ownership is
+changed.
 
 Perk mods should register combat hit effects through the framework instead of
 calling `interfaces.Combat.addOnHitHandler` directly. This gives all perk mods

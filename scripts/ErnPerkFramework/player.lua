@@ -150,20 +150,92 @@ local function syncPerks()
     for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
         local foundPerk = interfaces.ErnPerkFramework.getPerks()[perkID]
         if foundPerk then
-            foundPerk:onAdd()
-            reconcilePersistentSpells(foundPerk)
+            log(3, nil, "syncPerks() reapply begin: " .. tostring(perkID))
+            local addOk, addErr = pcall(function() foundPerk:onAdd() end)
+            if not addOk then
+                log(nil, "syncPerks() onAdd failed for " .. tostring(perkID)
+                    .. ": " .. tostring(addErr))
+            else
+                log(3, nil, "syncPerks() reapply end: " .. tostring(perkID))
+            end
+            log(3, nil, "syncPerks() persistent-spell check begin: "
+                .. tostring(perkID))
+            local spellOk, spellErr = pcall(reconcilePersistentSpells, foundPerk)
+            if not spellOk then
+                log(nil, "syncPerks() persistent-spell check failed for "
+                    .. tostring(perkID) .. ": " .. tostring(spellErr))
+            else
+                log(3, nil, "syncPerks() persistent-spell check end: "
+                    .. tostring(perkID))
+            end
             observedOwnedPerks[perkID] = true
             pendingInitialReapply[perkID] = nil
         elseif pendingInitialReapply[perkID] then
             log(nil, "Deferring reapply for perk " .. perkID .. ", not registered yet.")
         end
+        -- A large mod list can own hundreds of perks. Yield after every entry
+        -- so their reconciliation callbacks and engine bindings are not all
+        -- executed in one unbounded update frame.
+        coroutine.yield()
     end
 
     log(2, nil, "syncPerks() ended.")
 end
 
-local SYNC_STEPS_PER_TICK = 128
+local SYNC_STEPS_PER_TICK = 24
 local syncCoroutine = nil
+local reloadPlayerPerks
+local pendingReloadRequests = {}
+local reloadCoroutine = nil
+local activeReloadRequest = nil
+local RELOAD_STEPS_PER_TICK = 8
+
+--- Sends a queued rebuild result back to its requesting player script.
+--- @param request table Request metadata.
+--- @param result table Primitive rebuild result.
+local function finishReloadRequest(request, result)
+    result = result or {
+        success = false,
+        reason = "missing-result",
+        restored = 0,
+        forced = 0,
+        failed = 1,
+    }
+    if request and request.resultEvent then
+        result.requestId = request.requestId
+        result.source = request.source
+        result.requestedVersion = request.requestedVersion
+        pself:sendEvent(request.resultEvent, result)
+    end
+end
+
+--- Advances a queued lifecycle rebuild without monopolizing one update frame.
+local function processReload()
+    if reloadCoroutine == nil then return end
+    for _ = 1, RELOAD_STEPS_PER_TICK do
+        local ok, result = coroutine.resume(reloadCoroutine)
+        if not ok then
+            finishReloadRequest(activeReloadRequest, {
+                success = false,
+                reason = "reload-error",
+                error = tostring(result),
+                restored = 0,
+                forced = 0,
+                failed = 1,
+            })
+            reloadCoroutine = nil
+            activeReloadRequest = nil
+            return
+        end
+        if coroutine.status(reloadCoroutine) == "dead" then
+            finishReloadRequest(activeReloadRequest, result)
+            reloadCoroutine = nil
+            activeReloadRequest = nil
+            return
+        end
+    end
+end
+
 local function processSync()
     if syncCoroutine == nil then
         syncCoroutine = coroutine.create(syncPerks)
@@ -189,12 +261,33 @@ local function onUpdate(dt)
         return
     end
 
+    -- A version migration owns the perk list until its complete acquisition
+    -- order has been restored. Ordinary sync must not inspect a partial list.
+    if reloadCoroutine ~= nil then
+        processReload()
+        return
+    end
+
     -- Once a sync has started, keep advancing it in small batches each frame
     -- instead of waiting for the normal periodic timer between coroutine
     -- resumes. This keeps reload/load reconciliation responsive without
     -- turning every ordinary frame into a full sync pass.
     if syncCoroutine ~= nil then
         processSync()
+        return
+    end
+
+    -- External perk packs can request the same full lifecycle rebuild used by
+    -- `luaperks reload`. Requests wait for the current sync to finish so a
+    -- migration cannot respec ownership while the sync coroutine is iterating
+    -- over it.
+    if #pendingReloadRequests > 0 then
+        activeReloadRequest = table.remove(pendingReloadRequests, 1)
+        reloadCoroutine = coroutine.create(function()
+            return reloadPlayerPerks({ batched = true })
+        end)
+        -- Do not begin lifecycle callbacks in the same frame that accepted the
+        -- request; this also leaves a clean diagnostic boundary in the log.
         return
     end
 
@@ -333,14 +426,21 @@ end
 --- in the same order. A previously owned perk may bypass requirements when a
 --- normal purchase fails, which preserves dialogue rewards and hidden perks;
 --- real costs are always checked and therefore spent again.
-local function reloadPlayerPerks()
+reloadPlayerPerks = function(options)
+    options = options or {}
     local purchaseOrder = {}
     for _, perkID in ipairs(interfaces.ErnPerkFramework.getPlayerPerks()) do
         purchaseOrder[#purchaseOrder + 1] = perkID
     end
     if #purchaseOrder == 0 then
         consolePrint("Perk Reload: no owned perks to rebuild.")
-        return
+        return {
+            success = true,
+            reason = "no-owned-perks",
+            restored = 0,
+            forced = 0,
+            failed = 0,
+        }
     end
 
     -- Do not destroy ownership when one provider has not registered yet.
@@ -350,7 +450,14 @@ local function reloadPlayerPerks()
         if interfaces.ErnPerkFramework.getPerk(perkID) == nil then
             consolePrint("Perk Reload aborted: " .. tostring(perkID)
                 .. " is not currently registered.")
-            return
+            return {
+                success = false,
+                reason = "perk-not-registered",
+                perkID = perkID,
+                restored = 0,
+                forced = 0,
+                failed = 0,
+            }
         end
     end
 
@@ -359,12 +466,34 @@ local function reloadPlayerPerks()
     syncCoroutine = nil
     pendingInitialReapply = {}
     observedOwnedPerks = {}
-    interfaces.ErnPerkFramework.respecPerks()
 
     local restored = 0
     local forced = 0
     local failed = 0
+
+    -- Mirror respecPerks while allowing automatic migrations to yield between
+    -- callbacks. Ownership is cleared only after every onRemove has run, which
+    -- preserves the same callback semantics as an ordinary Framework respec.
     for index, perkID in ipairs(purchaseOrder) do
+        local perk = interfaces.ErnPerkFramework.getPerk(perkID)
+        log(3, nil, "Perk Reload remove begin " .. tostring(index)
+            .. ": " .. tostring(perkID))
+        local ok, err = pcall(function() perk:onRemove() end)
+        if not ok then
+            failed = failed + 1
+            consolePrint("Perk Reload remove failed at " .. tostring(index)
+                .. ": " .. tostring(perkID) .. " error=" .. tostring(err))
+        else
+            log(3, nil, "Perk Reload remove end " .. tostring(index)
+                .. ": " .. tostring(perkID))
+        end
+        if options.batched then coroutine.yield() end
+    end
+    interfaces.ErnPerkFramework._setPlayerPerks({})
+
+    for index, perkID in ipairs(purchaseOrder) do
+        log(3, nil, "Perk Reload grant begin " .. tostring(index)
+            .. ": " .. tostring(perkID))
         local callOk, success, reason = pcall(
             interfaces.ErnPerkFramework.grantPerk,
             perkID,
@@ -400,12 +529,44 @@ local function reloadPlayerPerks()
                 .. ": " .. tostring(perkID)
                 .. " reason=" .. tostring(callOk and reason or success))
         end
+        log(3, nil, "Perk Reload grant end " .. tostring(index)
+            .. ": " .. tostring(perkID)
+            .. " owned=" .. tostring(interfaces.ErnPerkFramework.playerHasPerk(perkID)))
+        if options.batched then coroutine.yield() end
     end
 
-    remainingDT = 0
+    -- The rebuild itself just reconciled every callback. Leave one normal sync
+    -- interval before checking again instead of immediately applying all perks
+    -- for a third time during startup.
+    remainingDT = 2.06
     consolePrint("Perk Reload complete: restored=" .. tostring(restored)
         .. " forced=" .. tostring(forced)
         .. " failed=" .. tostring(failed) .. ".")
+    return {
+        success = failed == 0,
+        reason = failed == 0 and "complete" or "perk-rebuild-failed",
+        restored = restored,
+        forced = forced,
+        failed = failed,
+    }
+end
+
+--- Queues a full perk lifecycle rebuild for another player script.
+--- The optional result event receives only primitive status fields and is sent
+--- after the Framework's active synchronization coroutine has finished.
+--- @param data table|nil Request metadata.
+local function requestPlayerPerkReload(data)
+    data = data or {}
+    local resultEvent = data.resultEvent
+    if type(resultEvent) ~= "string" or resultEvent == "" then
+        resultEvent = nil
+    end
+    pendingReloadRequests[#pendingReloadRequests + 1] = {
+        requestId = data.requestId,
+        source = data.source,
+        requestedVersion = data.requestedVersion,
+        resultEvent = resultEvent,
+    }
 end
 
 --- Normalizes player-entered console commands before matching.
@@ -454,7 +615,8 @@ local function onConsoleCommand(mode, command, selectedObject)
         interfaces.ErnPerkFramework.respecPerks()
         remainingDT = 0
     elseif reload then
-        reloadPlayerPerks()
+        requestPlayerPerkReload({ source = "console" })
+        consolePrint("Perk Reload queued. Close the console to begin the rebuild.")
     elseif dump then
         dumpPlayerPerks()
     end
@@ -486,6 +648,7 @@ return {
         UiModeChanged = UiModeChanged,
         [settings.MOD_NAME .. "addPerk"] = addPerk,
         [settings.MOD_NAME .. "removePerk"] = removePerk,
+        ErnPerkFramework_RequestPlayerPerkReload = requestPlayerPerkReload,
     },
     engineHandlers = {
         onUpdate = onUpdate,
