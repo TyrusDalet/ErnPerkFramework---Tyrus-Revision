@@ -398,7 +398,8 @@ end
 --- @param name string The name of the global variable.
 --- @return any The value of the global variable.
 local function readGlobalVariable(name)
-    local readVal = mwVars:get(pself.id)[name]
+    local playerVars = mwVars:get(pself.id) or {}
+    local readVal = playerVars[name]
     log(3, name, "Variable " .. name .. ": " .. tostring(readVal))
     return readVal
 end

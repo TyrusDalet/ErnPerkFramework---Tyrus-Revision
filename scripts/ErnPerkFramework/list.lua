@@ -225,7 +225,7 @@ function ListFunctions.update(self)
     end
     self.containerElement.layout.content = ui.content {}
 
-    -- just wrap around infinitely
+    -- Keep the selection and visible range within the finite list bounds.
     self.topIndex = self:clamp(self.topIndex)
     self.selectedIndex = self:clamp(self.selectedIndex)
 
